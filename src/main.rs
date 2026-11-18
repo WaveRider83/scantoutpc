@@ -77,7 +77,7 @@ fn main() -> eframe::Result<()> {
             .with_title("ScantoutPC")
             .with_inner_size([460.0, 360.0])
             .with_min_inner_size([360.0, 280.0])
-            .with_decorations(false)
+            .with_decorations(true)
             .with_always_on_top()
             .with_resizable(true)
             .with_icon({ let (rgba, w, h) = icon_rgba(); egui::IconData { rgba, width: w, height: h } }),
@@ -103,6 +103,7 @@ fn main() -> eframe::Result<()> {
                 overlay_shots: None,
                 auto_capture_at: None,
                 keep_history: true,
+                hist_tex: std::collections::HashMap::new(),
                 ocr_lang: ocr::OcrLang::Latin,
                 ocr_engine: None,
                 _hotkey_manager: hotkey_manager,
@@ -146,6 +147,44 @@ fn history_append(dir: &std::path::Path, line: &str) {
     }
 }
 
+
+fn scan_history() -> Vec<(u64, std::path::PathBuf, Option<std::path::PathBuf>)> {
+    let mut v = Vec::new();
+    if let Some(d) = dump_dir() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if let Some(rest) = name.strip_prefix("cap_") {
+                    if let Some(ts) = rest.strip_suffix(".png").and_then(|x| x.parse::<u64>().ok()) {
+                        let txt = d.join(format!("ocr_{ts}.txt"));
+                        v.push((ts, e.path(), txt.exists().then_some(txt)));
+                    }
+                }
+            }
+        }
+    }
+    v.sort_by(|a, b| b.0.cmp(&a.0));
+    v
+}
+
+fn fmt_ts_utc(ts: u64) -> String {
+    let secs = ts as i64;
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    let (hh, mm) = (rem / 3600, (rem % 3600) / 60);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{d:02}/{m:02} {hh:02}:{mm:02}Z")
+}
+
 fn make_icon() -> Icon {
     let (rgba, w, h) = icon_rgba();
     Icon::from_rgba(rgba, w, h).expect("icon")
@@ -173,6 +212,7 @@ struct ScantoutApp {
     overlay_shots: Option<Vec<OverlayShot>>,
     auto_capture_at: Option<std::time::Instant>,
     keep_history: bool,
+    hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
     ocr_lang: ocr::OcrLang,
     ocr_engine: Option<ocr::OcrEngine>,
     _hotkey_manager: GlobalHotKeyManager,
@@ -313,20 +353,10 @@ impl eframe::App for ScantoutApp {
                 }
             }
         }
-        let title = ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("● ScantoutPC").color(egui::Color32::from_rgb(96, 165, 250)).strong());
-        }).response;
-        let title_rect = title.rect.expand2(egui::vec2(8.0, 4.0));
-        let drag = ui.interact(title_rect, ui.scope_id().with("drag-title"), egui::Sense::drag());
-        if drag.drag_started() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
-        ui.add_space(4.0);
-        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
             ui.add(egui::TextEdit::multiline(&mut self.text)
                 .desired_width(f32::INFINITY)
-                .desired_rows(8)
+                .desired_rows(10)
                 .hint_text("Le texte capturé apparaîtra ici…"));
         });
         if let Some(tex) = &self.capture {
@@ -344,25 +374,91 @@ impl eframe::App for ScantoutApp {
                     }
                 });
         });
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.keep_history, "Historique captures (I:\\<local>\\scantoutpc\\captures)");
-            if ui.button("Effacer").clicked() {
-                if let Some(d) = dump_dir() {
-                    if let Ok(rd) = std::fs::read_dir(&d) {
-                        for e in rd.flatten() {
-                            if let Some(name) = e.file_name().to_str().map(|x| x.to_string()) {
-                                if name.starts_with("cap_") || name.starts_with("ocr_") || name == "history.log" {
-                                    let _ = std::fs::remove_file(e.path());
+        let hist = scan_history();
+        egui::CollapsingHeader::new(format!("Historique ({} capture{})", hist.len(), if hist.len() > 1 { "s" } else { "" }))
+            .id_salt("historique")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.keep_history, "Conserver les captures");
+                    if ui.button("Effacer tout").clicked() {
+                        if let Some(d) = dump_dir() {
+                            if let Ok(rd) = std::fs::read_dir(&d) {
+                                for e in rd.flatten() {
+                                    if let Some(name) = e.file_name().to_str().map(|x| x.to_string()) {
+                                        if name.starts_with("cap_") || name.starts_with("ocr_") || name == "history.log" {
+                                            let _ = std::fs::remove_file(e.path());
+                                        }
+                                    }
                                 }
                             }
+                            self.hist_tex.clear();
+                            self.status = "historique effacé".into();
                         }
                     }
-                    self.status = "historique effacé".into();
-                } else {
-                    self.status = "dossier historique introuvable".into();
-                }
-            }
-        });
+                });
+                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                    for (ts, png, txt) in &hist {
+                        ui.horizontal(|ui| {
+                            let key = ts.to_string();
+                            if !self.hist_tex.contains_key(&key) {
+                                if let Ok(bytes) = std::fs::read(png) {
+                                    if let Ok(img) = image::load_from_memory(&bytes) {
+                                        let t = img.thumbnail(120, 72).to_rgba8();
+                                        let (w, h) = t.dimensions();
+                                        let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], t.as_raw());
+                                        let tex = ui.ctx().load_texture(format!("hist-{ts}"), color, egui::TextureOptions::LINEAR);
+                                        self.hist_tex.insert(key.clone(), tex);
+                                    }
+                                }
+                            }
+                            if let Some(tex) = self.hist_tex.get(&key) {
+                                ui.add(egui::Image::from_texture(tex).fit_to_exact_size(egui::vec2(72.0, 46.0)));
+                            }
+                            ui.vertical(|ui| {
+                                ui.small(fmt_ts_utc(*ts));
+                                let preview: String = txt.as_ref()
+                                    .and_then(|p| std::fs::read_to_string(p).ok())
+                                    .map(|t| t.split('\n').take(2).collect::<Vec<_>>().join(" "))
+                                    .unwrap_or_default();
+                                let trunc: String = preview.chars().take(90).collect();
+                                ui.label(egui::RichText::new(trunc).small());
+                                ui.horizontal(|ui| {
+                                    if ui.button("Charger").clicked() {
+                                        if let Some(p) = txt {
+                                            self.text = std::fs::read_to_string(p).unwrap_or_default();
+                                        }
+                                    }
+                                    if ui.button("Copier").clicked() {
+                                        if let Some(p) = txt {
+                                            if let Ok(t) = std::fs::read_to_string(p) {
+                                                if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                    let _ = cb.set_text(t);
+                                                }
+                                                self.status = "copié ✓".into();
+                                            }
+                                        }
+                                    }
+                                    if ui.button("✕").clicked() {
+                                        let _ = std::fs::remove_file(png);
+                                        if let Some(p) = txt { let _ = std::fs::remove_file(p); }
+                                        self.hist_tex.remove(&key);
+                                        if let Some(d) = dump_dir() {
+                                            let hp = d.join("history.log");
+                                            if let Ok(content) = std::fs::read_to_string(&hp) {
+                                                let kept: Vec<&str> = content.lines().filter(|l| !l.starts_with(&format!("{ts} "))).collect();
+                                                let out = if kept.is_empty() { String::new() } else { kept.join("\n") + "\n" };
+                                                let _ = std::fs::write(&hp, out);
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                        ui.separator();
+                    }
+                });
+            });
         ui.horizontal(|ui| {
             if ui.button("Copier").clicked() {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
