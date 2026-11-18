@@ -34,7 +34,9 @@ fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
     let w = zw.min(iw - x);
     let h = zh.min(ih - y);
     if w <= 0 || h <= 0 { return Err("zone hors écran".into()); }
-    Ok(image::imageops::crop_imm(&img, x as u32, y as u32, w as u32, h as u32).to_image())
+    let mut out = image::imageops::crop_imm(&img, x as u32, y as u32, w as u32, h as u32).to_image();
+    for px in out.pixels_mut() { px.0[3] = 255; }
+    Ok(out)
 }
 
 fn main() -> eframe::Result<()> {
@@ -155,13 +157,16 @@ impl eframe::App for ScantoutApp {
                 for (i, m) in monitors.iter().enumerate() {
                     if let Ok(img) = m.capture_image() {
                         let scale = m.scale_factor().unwrap_or(1.0);
-                        let size = [img.width() as usize, img.height() as usize];
-                        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                        let w = img.width() as usize;
+                        let h = img.height() as usize;
+                        let mut raw = img.into_raw();
+                        for px in raw.chunks_exact_mut(4) { px[3] = 255; }
+                        let color = egui::ColorImage::from_rgba_unmultiplied([w, h], &raw);
                         let tex = ctx.load_texture(format!("overlay-mon-{i}"), color, egui::TextureOptions::LINEAR);
                         shots.push(OverlayShot {
                             name: m.name().unwrap_or_else(|_| format!("mon-{i}")),
                             logical_pos: [m.x().unwrap_or(0) as f32 / scale, m.y().unwrap_or(0) as f32 / scale],
-                            logical_size: [img.width() as f32 / scale, img.height() as f32 / scale],
+                            logical_size: [w as f32 / scale, h as f32 / scale],
                             scale,
                             tex,
                         });
