@@ -66,6 +66,7 @@ impl OcrEngine {
         };
         let engine = OAROCRBuilder::new(det_s.as_str(), rec_s.as_str(), dict_s.as_str())
             .text_detection_config(det_cfg)
+            .split_line_gaps(true)
             .build()
             .map_err(|e| format!("init OCR: {e}"))?;
         Ok(Self { lang, engine })
@@ -93,14 +94,83 @@ impl OcrEngine {
             .flat_map(|r| r.text_regions.into_iter())
             .filter_map(|r| r.text)
             .map(|t| t.to_string())
+            .map(|t| postprocess_line(t.to_string()))
             .collect::<Vec<_>>()
             .join("\n");
         Ok(text)
     }
 }
 
+/// Complete la post-edition d'une ligne OCR : espaces que le modele ne peut pas deviner.
+fn postprocess_line(s: String) -> String {
+    space_after_sn_label(&space_before_embedded_date(&s))
+}
+
+/// "...W2024-07-18" -> "...W 2024-07-18" (date ISO collee a un alphanum)
+fn space_before_embedded_date(s: &str) -> String {
+    fn is_iso_date(b: &[u8], i: usize) -> bool {
+        if i + 10 > b.len() { return false; }
+        let sep = b[i + 4];
+        (sep == b'-' || sep == b'/' || sep == b'.')
+            && b[i..i + 4].iter().all(|c| c.is_ascii_digit())
+            && b[i + 5..i + 7].iter().all(|c| c.is_ascii_digit())
+            && b[i + 7] == sep
+            && b[i + 8..i + 10].iter().all(|c| c.is_ascii_digit())
+    }
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut last = 0usize;
+    let mut i = 1usize;
+    while i < b.len() {
+        if i + 10 <= b.len() && is_iso_date(b, i) && b[i - 1].is_ascii_alphanumeric() {
+            out.push_str(&s[last..i]);
+            out.push(' ');
+            last = i;
+            i += 10;
+            continue;
+        }
+        i += 1;
+    }
+    out.push_str(&s[last..]);
+    out
+}
+
+/// "SNK0R9..." -> "SN K0R9..." (label SN colle a la serie, en debut de token)
+fn space_after_sn_label(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i + 1 < b.len() {
+        if b[i] == b'S' && b[i + 1] == b'N' {
+            let boundary = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+            let next_alnum = b.get(i + 2).map(|c| c.is_ascii_alphanumeric()).unwrap_or(false);
+            if boundary && next_alnum {
+                out.push_str(&s[last..i + 2]);
+                out.push(' ');
+                last = i + 2;
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&s[last..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn espace_sn_et_date() {
+        assert_eq!(super::postprocess_line("SNK0R9M3GX700145W2024-07-18".to_string()), "SN K0R9M3GX700145W 2024-07-18");
+        assert_eq!(super::postprocess_line("[SN]K0R9 2024-07-18".to_string()), "[SN] K0R9 2024-07-18");
+        assert_eq!(super::postprocess_line("SN K0R9 deja espace".to_string()), "SN K0R9 deja espace");
+        assert_eq!(super::postprocess_line("USP-C017F6A/WR".to_string()), "USP-C017F6A/WR");
+        assert_eq!(super::postprocess_line("REF2024-07-18 en fin".to_string()), "REF 2024-07-18 en fin");
+        assert_eq!(super::postprocess_line("SN".to_string()), "SN");
+    }
+
     #[test]
     #[ignore]
     fn ocr_smoke() {
