@@ -82,6 +82,7 @@ fn main() -> eframe::Result<()> {
                 main_visible: true,
                 capture: None,
                 overlay_active: false,
+                overlay_shots: None,
                 auto_capture_at: None,
                 _hotkey_manager: hotkey_manager,
             }))
@@ -103,6 +104,14 @@ fn make_icon() -> Icon {
     Icon::from_rgba(rgba, 32, 32).expect("icon")
 }
 
+struct OverlayShot {
+    name: String,
+    logical_pos: [f32; 2],
+    logical_size: [f32; 2],
+    scale: f32,
+    tex: egui::TextureHandle,
+}
+
 struct ScantoutApp {
     text: String,
     status: String,
@@ -114,6 +123,7 @@ struct ScantoutApp {
     main_visible: bool,
     capture: Option<egui::TextureHandle>,
     overlay_active: bool,
+    overlay_shots: Option<Vec<OverlayShot>>,
     auto_capture_at: Option<std::time::Instant>,
     _hotkey_manager: GlobalHotKeyManager,
 }
@@ -168,18 +178,39 @@ impl eframe::App for ScantoutApp {
                 self.do_capture(&ctx);
             }
         }
-        if self.picking && !self.overlay_active {
-            let mut v = egui::Visuals::dark();
-            v.window_fill = egui::Color32::TRANSPARENT;
-            v.panel_fill = egui::Color32::TRANSPARENT;
-            v.extreme_bg_color = egui::Color32::TRANSPARENT;
-            v.faint_bg_color = egui::Color32::TRANSPARENT;
-            ctx.set_visuals(v);
-            self.overlay_active = true;
+        if self.picking && self.overlay_shots.is_none() {
+            let mut shots = Vec::new();
+            if let Ok(monitors) = xcap::Monitor::all() {
+                for (i, m) in monitors.iter().enumerate() {
+                    if let Ok(img) = m.capture_image() {
+                        let scale = m.scale_factor().unwrap_or(1.0);
+                        let w = img.width() as usize;
+                        let h = img.height() as usize;
+                        let mut raw = img.into_raw();
+                        for px in raw.chunks_exact_mut(4) { px[3] = 255; }
+                        let color = egui::ColorImage::from_rgba_unmultiplied([w, h], &raw);
+                        let tex = ctx.load_texture(format!("overlay-mon-{i}"), color, egui::TextureOptions::LINEAR);
+                        shots.push(OverlayShot {
+                            name: m.name().unwrap_or_else(|_| format!("mon-{i}")),
+                            logical_pos: [m.x().unwrap_or(0) as f32 / scale, m.y().unwrap_or(0) as f32 / scale],
+                            logical_size: [w as f32 / scale, h as f32 / scale],
+                            scale,
+                            tex,
+                        });
+                    }
+                }
+            }
+            if shots.is_empty() {
+                self.picking = false;
+                self.status = "capture d'écran impossible".into();
+            } else {
+                self.overlay_active = true;
+            }
+            self.overlay_shots = Some(shots);
         }
         if !self.picking && self.overlay_active {
-            ctx.set_visuals(egui::Visuals::dark());
             self.overlay_active = false;
+            self.overlay_shots = None;
             if let Ok(monitors) = xcap::Monitor::all() {
                 for i in 0..monitors.len() {
                     ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of(("zone-overlay", i)), egui::ViewportCommand::Close);
@@ -230,24 +261,20 @@ impl eframe::App for ScantoutApp {
         });
 
         if self.picking {
-            let monitors = xcap::Monitor::all().unwrap_or_default();
-            for (idx, m) in monitors.iter().enumerate() {
-                let scale = m.scale_factor().unwrap_or(1.0);
-                let lw = m.width().unwrap_or(0) as f32 / scale;
-                let lh = m.height().unwrap_or(0) as f32 / scale;
-                let lx = m.x().unwrap_or(0) as f32 / scale;
-                let ly = m.y().unwrap_or(0) as f32 / scale;
-                let mon_name = m.name().unwrap_or_else(|_| format!("mon-{idx}"));
+            let shots: Vec<&OverlayShot> = self.overlay_shots.as_ref().map(|v| v.iter().collect()).unwrap_or_default();
+            for (idx, shot) in shots.into_iter().enumerate() {
                 let builder = egui::ViewportBuilder::default()
                     .with_title("zone")
-                    .with_inner_size([lw, lh])
-                    .with_position([lx, ly])
+                    .with_inner_size(shot.logical_size)
+                    .with_position(shot.logical_pos)
                     .with_decorations(false)
-                    .with_transparent(true)
                     .with_always_on_top()
                     .with_active(true)
                     .with_taskbar(false)
                     .with_resizable(false);
+                let tex = shot.tex.clone();
+                let mon_name = shot.name.clone();
+                let scale = shot.scale;
                 let drag_start = &mut self.drag_start;
                 let drag_now = &mut self.drag_now;
                 let drag_screen = &mut self.drag_screen;
@@ -257,8 +284,8 @@ impl eframe::App for ScantoutApp {
                 let status = &mut self.status;
                 let scale = scale;
                 ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("zone-overlay", idx)), builder, |ui, _class| {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Transparent(true));
                     let screen = ui.max_rect();
+                    ui.painter().image(tex.id(), screen, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
                     ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(110));
                     ui.painter().text(
                         egui::Pos2::new(screen.center().x, 24.0),
