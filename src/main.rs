@@ -100,7 +100,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("ScantoutPC")
             .with_inner_size([460.0, 360.0])
-            .with_min_inner_size([360.0, 280.0])
+            .with_min_inner_size([MINI_W, MINI_H])
             .with_decorations(true)
             .with_always_on_top()
             .with_resizable(true)
@@ -131,6 +131,7 @@ fn main() -> eframe::Result<()> {
                 auto_copy: true,
                 light_mode: false,
                 show_on_capture: true,
+                mini: false,
                 hist_tex: std::collections::HashMap::new(),
                 tray_opts,
                 ocr_lang: ocr::OcrLang::Latin,
@@ -176,6 +177,30 @@ fn history_append(dir: &std::path::Path, line: &str) {
     }
 }
 
+
+const MINI_W: f32 = 230.0;
+const MINI_H: f32 = 30.0;
+const NORMAL_SIZE: egui::Vec2 = egui::vec2(460.0, 360.0);
+
+impl ScantoutApp {
+    fn enter_mini(&mut self, ctx: &egui::Context) {
+        self.mini = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
+        if let Some(ms) = ctx.input(|i| i.viewport().monitor_size) {
+            let taskbar = 46.0;
+            let pos = egui::pos2(ms.x - MINI_W - 10.0, ms.y - MINI_H - taskbar);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    }
+    fn exit_mini(&mut self, ctx: &egui::Context) {
+        self.mini = false;
+        self.main_visible = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(NORMAL_SIZE));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+}
 
 fn clear_history_files() -> usize {
     let mut n = 0;
@@ -270,6 +295,7 @@ struct ScantoutApp {
     auto_copy: bool,
     light_mode: bool,
     show_on_capture: bool,
+    mini: bool,
     hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
     tray_opts: TrayOptions,
     ocr_lang: ocr::OcrLang,
@@ -346,12 +372,15 @@ impl ScantoutApp {
             None => self.status = "définis d'abord une zone".into(),
         }
         if !self.show_on_capture {
-            self.main_visible = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.enter_mini(ctx);
         }
     }
 
     fn toggle_main(&mut self, ctx: &egui::Context) {
+        if self.mini {
+            self.exit_mini(ctx);
+            return;
+        }
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         if minimized {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -455,6 +484,15 @@ impl eframe::App for ScantoutApp {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.main_visible = false;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        if self.mini {
+            ui.horizontal_centered(|ui| {
+                ui.add_space(2.0);
+                if ui.button(egui::RichText::new("● ScantoutPC — cliquer pour agrandir").small()).clicked() {
+                    self.exit_mini(ui.ctx());
+                }
+            });
+            return;
         }
         if self.picking && self.overlay_shots.is_none() {
             let mut shots = Vec::new();
