@@ -106,7 +106,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ScantoutPC")
-            .with_inner_size([460.0, 360.0])
+            .with_inner_size(if start_mini { [MINI_W, MINI_H] } else { [460.0, 360.0] })
             .with_min_inner_size([MINI_W, MINI_H])
             .with_decorations(true)
             .with_always_on_top()
@@ -731,9 +731,10 @@ impl eframe::App for ScantoutApp {
                         self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
                         dbg_log("mini reshown + pick differe");
                     } else {
-                        self.exit_mini(ctx);
+                        // deja en mini visible : capturer sans agrandir
+                        self.mini_since = Some(std::time::Instant::now());
                         self.picking = true;
-                        dbg_log("picking=true (exit mini)");
+                        dbg_log("picking=true (mini, sans agrandir)");
                     }
                 } else if was_hidden {
                     self.main_visible = true;
