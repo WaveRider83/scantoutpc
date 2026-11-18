@@ -102,6 +102,7 @@ fn main() -> eframe::Result<()> {
                 overlay_active: false,
                 overlay_shots: None,
                 auto_capture_at: None,
+                keep_history: true,
                 ocr_lang: ocr::OcrLang::Latin,
                 ocr_engine: None,
                 _hotkey_manager: hotkey_manager,
@@ -125,16 +126,24 @@ fn icon_rgba() -> (Vec<u8>, u32, u32) {
 }
 
 
-// DEBUG TEMP : dossiers candidats pour les dumps (a retirer)
-fn capture_dump_dir() -> Vec<std::path::PathBuf> {
+// DEBUG TEMP : premier dossier de dump creable (a retirer apres le debug)
+fn dump_dir() -> Option<std::path::PathBuf> {
     let mut cand: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(p) = std::env::var("SCANTOUT_CAPTURES") { cand.push(std::path::PathBuf::from(p)); }
+    cand.push(std::path::PathBuf::from(r"<local>\scantoutpc\captures"));
     cand.push(std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures"));
     cand.push(std::path::PathBuf::from(r"\\local-share\scantoutpc\captures"));
     if let Ok(exe) = std::env::current_exe() {
         if let Some(d) = exe.parent() { cand.push(d.join("captures")); }
     }
-    cand.into_iter().filter(|d| d.exists() || std::fs::create_dir_all(d).is_ok()).collect()
+    cand.into_iter().find(|d| d.exists() || std::fs::create_dir_all(d).is_ok())
+}
+
+fn history_append(dir: &std::path::Path, line: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("history.log")) {
+        let _ = writeln!(f, "{}", line);
+    }
 }
 
 fn make_icon() -> Icon {
@@ -163,6 +172,7 @@ struct ScantoutApp {
     overlay_active: bool,
     overlay_shots: Option<Vec<OverlayShot>>,
     auto_capture_at: Option<std::time::Instant>,
+    keep_history: bool,
     ocr_lang: ocr::OcrLang,
     ocr_engine: Option<ocr::OcrEngine>,
     _hotkey_manager: GlobalHotKeyManager,
@@ -177,24 +187,14 @@ impl ScantoutApp {
                     let _ = img.save(&dump);
                     // DEBUG TEMP : dump de la capture pour analyse (a retirer)
                     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                    let mut cand: Vec<std::path::PathBuf> = Vec::new();
-                    if let Ok(p) = std::env::var("SCANTOUT_CAPTURES") { cand.push(std::path::PathBuf::from(p)); }
-                    cand.push(std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures"));
-                    cand.push(std::path::PathBuf::from(r"\\local-share\scantoutpc\captures"));
-                    if let Ok(exe) = std::env::current_exe() {
-                        if let Some(d) = exe.parent() { cand.push(d.join("captures")); }
-                    }
-                    let mut dumped = false;
-                    for d in cand {
-                        if std::fs::create_dir_all(&d).is_ok() {
+                    if self.keep_history {
+                        if let Some(d) = dump_dir() {
                             if img.save(d.join(format!("cap_{ts}.png"))).is_ok() {
-                                self.status = format!("{} (dump: {})", self.status, d.display());
-                                dumped = true;
-                                break;
+                                history_append(&d, &format!("{ts} cap cap_{ts}.png {}x{}", img.width(), img.height()));
+                                self.status = format!("historique: {}", d.display());
                             }
                         }
                     }
-                    if !dumped { self.status = format!("{} (dump: echec)", self.status); }
                     let size = [img.width() as usize, img.height() as usize];
                     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
@@ -213,9 +213,13 @@ impl ScantoutApp {
                         match engine.recognize(&dynimg) {
                             Ok(text) => {
                                 // DEBUG TEMP : texte OCR a cote des dumps
-                                for d in capture_dump_dir() {
-                                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                                    let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &text);
+                                if self.keep_history {
+                                    if let Some(d) = dump_dir() {
+                                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                                        let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &text);
+                                        let preview: String = text.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
+                                        history_append(&d, &format!("{ts} ocr chars={} :: {}", text.len(), preview));
+                                    }
                                 }
                                 let text = text.trim().to_string();
                                 if text.is_empty() {
@@ -339,6 +343,25 @@ impl eframe::App for ScantoutApp {
                         ui.selectable_value(&mut self.ocr_lang, lang, lang.label());
                     }
                 });
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.keep_history, "Historique captures (I:\\<local>\\scantoutpc\\captures)");
+            if ui.button("Effacer").clicked() {
+                if let Some(d) = dump_dir() {
+                    if let Ok(rd) = std::fs::read_dir(&d) {
+                        for e in rd.flatten() {
+                            if let Some(name) = e.file_name().to_str().map(|x| x.to_string()) {
+                                if name.starts_with("cap_") || name.starts_with("ocr_") || name == "history.log" {
+                                    let _ = std::fs::remove_file(e.path());
+                                }
+                            }
+                        }
+                    }
+                    self.status = "historique effacé".into();
+                } else {
+                    self.status = "dossier historique introuvable".into();
+                }
+            }
         });
         ui.horizontal(|ui| {
             if ui.button("Copier").clicked() {
