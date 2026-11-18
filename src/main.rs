@@ -1,4 +1,5 @@
 // ScantoutPC — OCR live pour Windows (fenêtre flottante + overlay de sélection)
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use eframe::egui;
 use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, GlobalHotKeyManager};
 use tray_icon::{TrayIconBuilder, Icon};
