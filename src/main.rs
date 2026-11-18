@@ -126,6 +126,7 @@ fn main() -> eframe::Result<()> {
                 overlay_active: false,
                 overlay_shots: None,
                 auto_capture_at: None,
+                pick_at: None,
                 keep_history: true,
                 auto_copy: true,
                 light_mode: false,
@@ -264,6 +265,7 @@ struct ScantoutApp {
     overlay_active: bool,
     overlay_shots: Option<Vec<OverlayShot>>,
     auto_capture_at: Option<std::time::Instant>,
+    pick_at: Option<std::time::Instant>,
     keep_history: bool,
     auto_copy: bool,
     light_mode: bool,
@@ -375,6 +377,13 @@ impl eframe::App for ScantoutApp {
                 self.do_capture(ctx);
             }
         }
+        if let Some(t) = self.pick_at {
+            if std::time::Instant::now() >= t {
+                self.pick_at = None;
+                dbg_log("picking=true (differe)");
+                self.picking = true;
+            }
+        }
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().0.as_str() {
                 "toggle" => self.toggle_main(ctx),
@@ -420,6 +429,8 @@ impl eframe::App for ScantoutApp {
                 dbg_log("hotkey pressed");
                 // La selection de zone passe par des overlays egui enfants de la fenetre principale :
                 // elle DOIT etre visible, sinon egui panique ("user callback was never called").
+                // On restaure la fenetre puis on laisse une ou deux frames s'ecouler avant de
+                // creer les overlays.
                 let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
                 if !self.main_visible || minimized {
                     self.main_visible = true;
@@ -428,9 +439,12 @@ impl eframe::App for ScantoutApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+                    dbg_log("restore + pick differe");
+                } else {
+                    self.picking = true;
+                    dbg_log("picking=true");
                 }
-                self.picking = true;
-                dbg_log("picking=true");
             }
         }
     }
