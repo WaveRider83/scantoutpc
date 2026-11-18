@@ -10,6 +10,8 @@ if (-not (Have cargo)) {
   $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
 } else { Write-Host "Cargo: $(cargo --version) OK" }
 Set-Location $PSScriptRoot
+$proc = Get-Process -Name scantoutpc -ErrorAction SilentlyContinue
+if ($proc) { Write-Host "Fermeture de ScantoutPC en cours..."; $proc | Stop-Process -Force }
 cargo build --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build a echoue" }
 Write-Host ""
