@@ -65,7 +65,7 @@ fn main() -> eframe::Result<()> {
     let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, true, None);
     let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
     let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, false, None);
-    let opt_showwin = CheckMenuItem::with_id("opt_showwin", "Afficher la fenêtre lors d'une capture", true, true, None);
+    let opt_showwin = CheckMenuItem::with_id("opt_showwin", "Afficher la fenêtre après la capture", true, true, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
@@ -217,6 +217,17 @@ fn fmt_ts_local(ts: u64) -> String {
         .unwrap_or_else(|| ts.to_string())
 }
 
+
+fn dbg_log(msg: &str) {
+    use std::io::Write;
+    let line = format!("{} {}\n", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0), msg);
+    for p in [std::path::PathBuf::from(r"<local>\scantoutpc\debug.log"), std::env::temp_dir().join("scantoutpc_debug.log")] {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+}
+
 fn make_icon() -> Icon {
     let (rgba, w, h) = icon_rgba();
     Icon::from_rgba(rgba, w, h).expect("icon")
@@ -266,9 +277,11 @@ struct ScantoutApp {
 
 impl ScantoutApp {
     fn do_capture(&mut self, ctx: &egui::Context) {
+        dbg_log("do_capture start");
         match self.zone.clone() {
             Some(z) => match capture_zone(&z) {
                 Ok(img) => {
+                    dbg_log("capture_zone ok");
                     let dump = std::env::temp_dir().join("scantoutpc_capture.png");
                     let _ = img.save(&dump);
                     // DEBUG TEMP : dump de la capture pour analyse (a retirer)
@@ -329,6 +342,10 @@ impl ScantoutApp {
                 Err(e) => self.status = format!("capture échouée: {e}"),
             },
             None => self.status = "définis d'abord une zone".into(),
+        }
+        if !self.show_on_capture {
+            self.main_visible = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
     }
 
@@ -400,18 +417,20 @@ impl eframe::App for ScantoutApp {
         }
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
-                if self.show_on_capture {
-                    let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-                    if !self.main_visible || minimized {
-                        self.main_visible = true;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        if minimized {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        }
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                dbg_log("hotkey pressed");
+                // La selection de zone passe par des overlays egui enfants de la fenetre principale :
+                // elle DOIT etre visible, sinon egui panique ("user callback was never called").
+                let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                if !self.main_visible || minimized {
+                    self.main_visible = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    if minimized {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 self.picking = true;
+                dbg_log("picking=true");
             }
         }
     }
@@ -607,6 +626,7 @@ impl eframe::App for ScantoutApp {
                     }
                     let input = ui.input(|i| i.clone());
                     if input.key_pressed(egui::Key::Escape) {
+                        dbg_log("zone released");
                         *picking = false;
                         *drag_start = None;
                         *drag_now = None;
@@ -633,6 +653,7 @@ impl eframe::App for ScantoutApp {
                                 *auto_capture_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
                             }
                         }
+                        dbg_log("zone released");
                         *picking = false;
                         *drag_start = None;
                         *drag_now = None;
