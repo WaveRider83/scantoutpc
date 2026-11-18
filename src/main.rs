@@ -843,7 +843,7 @@ impl eframe::App for ScantoutApp {
         });
 
         }
-        let parent_visible = ctx.input(|i| i.viewport().visible().unwrap_or(true);
+        let parent_visible = ctx.input(|i| i.viewport().visible().unwrap_or(true));
         if self.picking && !parent_visible {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
