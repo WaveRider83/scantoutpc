@@ -1,6 +1,7 @@
 use image::DynamicImage;
 use oar_ocr::oarocr::OAROCRBuilder;
 use oar_ocr::domain::tasks::text_detection::TextDetectionConfig;
+use oar_ocr::processors::types::LimitType;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,8 @@ impl OcrEngine {
         let det_cfg = TextDetectionConfig {
             score_threshold: 0.2,
             box_threshold: 0.45,
+            limit_side_len: Some(2560),
+            limit_type: Some(LimitType::Max),
             ..Default::default()
         };
         let engine = OAROCRBuilder::new(det_s.as_str(), rec_s.as_str(), dict_s.as_str())
