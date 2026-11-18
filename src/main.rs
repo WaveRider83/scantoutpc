@@ -79,6 +79,7 @@ fn main() -> eframe::Result<()> {
                 drag_screen: None,
                 main_visible: true,
                 capture: None,
+                overlay_shots: None,
                 _hotkey_manager: hotkey_manager,
             }))
         }),
@@ -99,6 +100,14 @@ fn make_icon() -> Icon {
     Icon::from_rgba(rgba, 32, 32).expect("icon")
 }
 
+struct OverlayShot {
+    name: String,       // nom moniteur xcap
+    logical_pos: [f32; 2],
+    logical_size: [f32; 2],
+    scale: f32,
+    tex: egui::TextureHandle,
+}
+
 struct ScantoutApp {
     text: String,
     status: String,
@@ -109,6 +118,7 @@ struct ScantoutApp {
     drag_screen: Option<usize>,
     main_visible: bool,
     capture: Option<egui::TextureHandle>,
+    overlay_shots: Option<Vec<OverlayShot>>,
     _hotkey_manager: GlobalHotKeyManager,
 }
 
@@ -139,6 +149,28 @@ impl eframe::App for ScantoutApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.picking && self.overlay_shots.is_none() {
+            let mut shots = Vec::new();
+            if let Ok(monitors) = xcap::Monitor::all() {
+                for (i, m) in monitors.iter().enumerate() {
+                    if let Ok(img) = m.capture_image() {
+                        let scale = m.scale_factor().unwrap_or(1.0);
+                        let size = [img.width() as usize, img.height() as usize];
+                        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                        let tex = ctx.load_texture(format!("overlay-mon-{i}"), color, egui::TextureOptions::LINEAR);
+                        shots.push(OverlayShot {
+                            name: m.name().unwrap_or_else(|_| format!("mon-{i}")),
+                            logical_pos: [m.x().unwrap_or(0) as f32 / scale, m.y().unwrap_or(0) as f32 / scale],
+                            logical_size: [img.width() as f32 / scale, img.height() as f32 / scale],
+                            scale,
+                            tex,
+                        });
+                    }
+                }
+            }
+            if shots.is_empty() { self.picking = false; self.status = "aucune capture possible".into(); }
+            self.overlay_shots = Some(shots);
+        }
         let title = ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.label(egui::RichText::new("● ScantoutPC").color(egui::Color32::from_rgb(96, 165, 250)).strong());
@@ -193,25 +225,15 @@ impl eframe::App for ScantoutApp {
         });
 
         if self.picking {
-            let monitors = xcap::Monitor::all().unwrap_or_default();
-            let mon_infos: Vec<(String, f32, i32, i32, u32, u32)> = monitors.iter().map(|m| {
-                (m.name().unwrap_or_else(|_| "?".into()),
-                 m.scale_factor().unwrap_or(1.0),
-                 m.x().unwrap_or(0), m.y().unwrap_or(0),
-                 m.width().unwrap_or(0), m.height().unwrap_or(0))
-            }).collect();
-            for (idx, (name, scale, mx, my, mw, mh)) in mon_infos.iter().enumerate() {
-                let lw = (*mw as f32) / scale;
-                let lh = (*mh as f32) / scale;
-                let lx = (*mx as f32) / scale;
-                let ly = (*my as f32) / scale;
+            let shots = self.overlay_shots.take().unwrap_or_default();
+            for (idx, shot) in shots.into_iter().enumerate() {
                 let builder = egui::ViewportBuilder::default()
                     .with_title("zone")
-                    .with_inner_size([lw, lh])
-                    .with_position([lx, ly])
+                    .with_inner_size(shot.logical_size)
+                    .with_position(shot.logical_pos)
                     .with_decorations(false)
-                    .with_transparent(true)
                     .with_always_on_top()
+                    .with_active(true)
                     .with_taskbar(false)
                     .with_resizable(false);
                 let drag_start = &mut self.drag_start;
@@ -220,12 +242,14 @@ impl eframe::App for ScantoutApp {
                 let picking = &mut self.picking;
                 let zone = &mut self.zone;
                 let status = &mut self.status;
-                let name = name.clone();
+                let tex = shot.tex.clone();
+                let mon_name = shot.name.clone();
+                let scale = shot.scale;
                 ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("zone-overlay", idx)), builder, |ui, _class| {
                     let screen = ui.max_rect();
-                    let painter = ui.painter();
-                    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
-                    painter.text(
+                    ui.painter().image(tex.id(), screen, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(90));
+                    ui.painter().text(
                         egui::Pos2::new(screen.center().x, 24.0),
                         egui::Align2::CENTER_TOP,
                         "Glissez pour définir la zone — Échap pour annuler",
@@ -233,13 +257,12 @@ impl eframe::App for ScantoutApp {
                         egui::Color32::WHITE,
                     );
                     if *drag_screen == Some(idx) {
-                    if let (Some(s), Some(n)) = (*drag_start, *drag_now) {
-                        let rect = egui::Rect::from_two_pos(s, n);
-                        painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(59, 130, 246, 40));
-                        painter.rect_stroke(rect, 0.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(59, 130, 246)), egui::StrokeKind::Inside);
+                        if let (Some(s), Some(n)) = (*drag_start, *drag_now) {
+                            let rect = egui::Rect::from_two_pos(s, n);
+                            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(59, 130, 246, 60));
+                            ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(59, 130, 246)), egui::StrokeKind::Inside);
+                        }
                     }
-                    }
-                    let ppp = ui.ctx().pixels_per_point();
                     let input = ui.input(|i| i.clone());
                     if input.key_pressed(egui::Key::Escape) {
                         *picking = false;
@@ -251,29 +274,33 @@ impl eframe::App for ScantoutApp {
                     if input.pointer.button_pressed(egui::PointerButton::Primary) {
                         *drag_start = input.pointer.latest_pos();
                         *drag_now = *drag_start;
+                        *drag_screen = Some(idx);
                     }
-                    if input.pointer.button_down(egui::PointerButton::Primary) {
+                    if *drag_screen == Some(idx) && input.pointer.button_down(egui::PointerButton::Primary) {
                         if let Some(p) = input.pointer.latest_pos() {
                             *drag_now = Some(p);
                         }
                     }
-                    if input.pointer.button_released(egui::PointerButton::Primary) {
+                    if *drag_screen == Some(idx) && input.pointer.button_released(egui::PointerButton::Primary) {
                         if let (Some(s), Some(e)) = (*drag_start, *drag_now) {
                             let (x0, x1) = (s.x.min(e.x).round() as i32, s.x.max(e.x).round() as i32);
                             let (y0, y1) = (s.y.min(e.y).round() as i32, s.y.max(e.y).round() as i32);
                             if x1 - x0 >= 20 && y1 - y0 >= 20 {
-                                *zone = Some(PickedZone { monitor: name.clone(), x: x0, y: y0, w: x1 - x0, h: y1 - y0, ppp });
-                                *status = format!("zone : {}×{} @ écran {:?}", x1 - x0, y1 - y0, name);
+                                *zone = Some(PickedZone { monitor: mon_name.clone(), x: x0, y: y0, w: x1 - x0, h: y1 - y0, ppp: scale });
+                                *status = format!("zone : {}×{} sur {}", x1 - x0, y1 - y0, mon_name);
                             }
                         }
                         *picking = false;
                         *drag_start = None;
                         *drag_now = None;
+                        *drag_screen = None;
                     }
-                    *drag_screen = None;
                     ui.ctx().request_repaint();
                 });
             }
+        }
+        if !self.picking {
+            self.overlay_shots = None;
         }
     }
 }
