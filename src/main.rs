@@ -286,7 +286,7 @@ impl eframe::App for ScantoutApp {
                 ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("zone-overlay", idx)), builder, |ui, _class| {
                     let screen = ui.max_rect();
                     ui.painter().image(tex.id(), screen, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
-                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(110));
+                    ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(70));
                     ui.painter().text(
                         egui::Pos2::new(screen.center().x, 24.0),
                         egui::Align2::CENTER_TOP,

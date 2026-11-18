@@ -8,3 +8,4 @@ kanban/*.db-wal
 # already existing elements were commented out
 
 #/target
+models/
