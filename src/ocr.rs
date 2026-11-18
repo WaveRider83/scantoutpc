@@ -66,9 +66,17 @@ impl OcrEngine {
     }
 
     pub fn recognize(&self, image: &DynamicImage) -> Result<String, String> {
+        // Upscale des petites captures : le modele rec lit mieux les lignes >= ~40 px de haut
+        let mut rgb = image.to_rgb8();
+        let h = rgb.height();
+        if h < 120 {
+            let scale = (120.0 / h as f32).clamp(1.0, 4.0);
+            let (nw, nh) = ((rgb.width() as f32 * scale) as u32, (rgb.height() as f32 * scale) as u32);
+            rgb = image::imageops::resize(&rgb, nw, nh, image::imageops::FilterType::Lanczos3);
+        }
         let results = self
             .engine
-            .predict(vec![image.to_rgb8()])
+            .predict(vec![rgb])
             .map_err(|e| format!("OCR: {e}"))?;
         let text = results
             .into_iter()

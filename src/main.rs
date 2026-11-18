@@ -75,10 +75,12 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ScantoutPC")
-            .with_inner_size([420.0, 300.0])
+            .with_inner_size([460.0, 360.0])
+            .with_min_inner_size([360.0, 280.0])
             .with_decorations(false)
             .with_always_on_top()
-            .with_resizable(true),
+            .with_resizable(true)
+            .with_icon({ let (rgba, w, h) = icon_rgba(); egui::IconData { rgba, width: w, height: h } }),
         ..Default::default()
     };
 
@@ -108,7 +110,7 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-fn make_icon() -> Icon {
+fn icon_rgba() -> (Vec<u8>, u32, u32) {
     let mut rgba = vec![0u8; 32 * 32 * 4];
     for y in 0..32 {
         for x in 0..32 {
@@ -119,7 +121,12 @@ fn make_icon() -> Icon {
             rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = a;
         }
     }
-    Icon::from_rgba(rgba, 32, 32).expect("icon")
+    (rgba, 32, 32)
+}
+
+fn make_icon() -> Icon {
+    let (rgba, w, h) = icon_rgba();
+    Icon::from_rgba(rgba, w, h).expect("icon")
 }
 
 struct OverlayShot {
