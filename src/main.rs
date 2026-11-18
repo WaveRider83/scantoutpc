@@ -323,6 +323,13 @@ impl ScantoutApp {
     }
 
     fn toggle_main(&mut self, ctx: &egui::Context) {
+        let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        if minimized {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.main_visible = true;
+            return;
+        }
         self.main_visible = !self.main_visible;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.main_visible));
         if self.main_visible {
@@ -373,13 +380,16 @@ impl eframe::App for ScantoutApp {
         }
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
-                if self.main_visible {
-                    self.picking = true;
-                } else {
+                let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                if !self.main_visible || minimized {
                     self.main_visible = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    if minimized {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    }
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
+                self.picking = true;
             }
         }
     }
