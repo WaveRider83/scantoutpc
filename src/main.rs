@@ -4,6 +4,7 @@ use eframe::egui;
 use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, GlobalHotKeyManager};
 use tray_icon::{TrayIconBuilder, Icon};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+mod ocr;
 
 // zone en points logiques (egui) ; ppp = pixels_per_point de la fenêtre overlay
 #[derive(Clone)]
@@ -40,6 +41,21 @@ fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
 }
 
 fn main() -> eframe::Result<()> {
+    // pointe la DLL ONNX Runtime embarquee (build avec load-dynamic)
+    if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let candidate = if cfg!(windows) {
+                    dir.join("models").join("onnxruntime.dll")
+                } else {
+                    dir.join("models").join("libonnxruntime.so")
+                };
+                if candidate.exists() {
+                    unsafe { std::env::set_var("ORT_DYLIB_PATH", &candidate) };
+                }
+            }
+        }
+    }
     let tray_menu = Menu::new();
     let item_toggle = MenuItem::with_id("toggle", "Afficher / Masquer", true, None);
     let item_zone = MenuItem::with_id("zone", "Definir la zone...", true, None);
@@ -84,6 +100,8 @@ fn main() -> eframe::Result<()> {
                 overlay_active: false,
                 overlay_shots: None,
                 auto_capture_at: None,
+                ocr_lang: ocr::OcrLang::Latin,
+                ocr_engine: None,
                 _hotkey_manager: hotkey_manager,
             }))
         }),
@@ -125,6 +143,8 @@ struct ScantoutApp {
     overlay_active: bool,
     overlay_shots: Option<Vec<OverlayShot>>,
     auto_capture_at: Option<std::time::Instant>,
+    ocr_lang: ocr::OcrLang,
+    ocr_engine: Option<ocr::OcrEngine>,
     _hotkey_manager: GlobalHotKeyManager,
 }
 
@@ -138,7 +158,34 @@ impl ScantoutApp {
                     let size = [img.width() as usize, img.height() as usize];
                     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
-                    self.status = format!("capturé {}×{}", img.width(), img.height());
+                    let dynimg = image::DynamicImage::ImageRgba8(img);
+                    self.status = "ocr…".into();
+                    let lang = self.ocr_lang;
+                    let need_reload = self.ocr_engine.as_ref().map(|e| e.lang() != lang).unwrap_or(true);
+                    if need_reload {
+                        self.ocr_engine = None;
+                        match ocr::OcrEngine::load(lang) {
+                            Ok(e) => self.ocr_engine = Some(e),
+                            Err(e) => { self.status = format!("modèles OCR: {e}"); }
+                        }
+                    }
+                    if let Some(engine) = &self.ocr_engine {
+                        match engine.recognize(&dynimg) {
+                            Ok(text) => {
+                                let text = text.trim().to_string();
+                                if text.is_empty() {
+                                    self.status = "aucun texte détecté".into();
+                                } else {
+                                    self.text = text.clone();
+                                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                                        let _ = cb.set_text(text);
+                                    }
+                                    self.status = "texte copié ✓".into();
+                                }
+                            }
+                            Err(e) => self.status = e,
+                        }
+                    }
                 }
                 Err(e) => self.status = format!("capture échouée: {e}"),
             },
@@ -238,6 +285,16 @@ impl eframe::App for ScantoutApp {
             let scale = (max_w / tex.size_vec2().x).min(120.0 / tex.size_vec2().y).min(1.0);
             ui.add(egui::Image::from_texture(tex).max_width(tex.size_vec2().x * scale));
         }
+        ui.horizontal(|ui| {
+            ui.label("Langue OCR :");
+            egui::ComboBox::from_id_salt("ocr_lang")
+                .selected_text(self.ocr_lang.label())
+                .show_ui(ui, |ui| {
+                    for lang in ocr::OcrLang::ALL {
+                        ui.selectable_value(&mut self.ocr_lang, lang, lang.label());
+                    }
+                });
+        });
         ui.horizontal(|ui| {
             if ui.button("Copier").clicked() {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
