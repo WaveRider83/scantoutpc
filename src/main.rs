@@ -521,7 +521,9 @@ impl ScantoutApp {
             },
             None => self.status = "définis d'abord une zone".into(),
         }
-        self.enter_mini(ctx);
+        if self.mini {
+            self.enter_mini(ctx);
+        } // fenetre normale visible : on ne la reduit pas apres la capture
     }
 
     fn toggle_main(&mut self, ctx: &egui::Context) {
