@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 arboard = "3.7.0"
 eframe = "0.37.0"
 global-hotkey = "0.10.0"

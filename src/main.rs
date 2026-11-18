@@ -103,6 +103,7 @@ fn main() -> eframe::Result<()> {
                 overlay_shots: None,
                 auto_capture_at: None,
                 keep_history: true,
+                auto_copy: true,
                 hist_tex: std::collections::HashMap::new(),
                 ocr_lang: ocr::OcrLang::Latin,
                 ocr_engine: None,
@@ -167,22 +168,10 @@ fn scan_history() -> Vec<(u64, std::path::PathBuf, Option<std::path::PathBuf>)> 
     v
 }
 
-fn fmt_ts_utc(ts: u64) -> String {
-    let secs = ts as i64;
-    let days = secs.div_euclid(86400);
-    let rem = secs.rem_euclid(86400);
-    let (hh, mm) = (rem / 3600, (rem % 3600) / 60);
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{d:02}/{m:02} {hh:02}:{mm:02}Z")
+fn fmt_ts_local(ts: u64) -> String {
+    chrono::DateTime::from_timestamp(ts as i64, 0)
+        .map(|d| d.with_timezone(&chrono::Local).format("%d/%m %H:%M").to_string())
+        .unwrap_or_else(|| ts.to_string())
 }
 
 fn make_icon() -> Icon {
@@ -212,6 +201,7 @@ struct ScantoutApp {
     overlay_shots: Option<Vec<OverlayShot>>,
     auto_capture_at: Option<std::time::Instant>,
     keep_history: bool,
+    auto_copy: bool,
     hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
     ocr_lang: ocr::OcrLang,
     ocr_engine: Option<ocr::OcrEngine>,
@@ -266,10 +256,14 @@ impl ScantoutApp {
                                     self.status = "aucun texte détecté".into();
                                 } else {
                                     self.text = text.clone();
-                                    if let Ok(mut cb) = arboard::Clipboard::new() {
-                                        let _ = cb.set_text(text);
+                                    if self.auto_copy {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            let _ = cb.set_text(text);
+                                        }
+                                        self.status = "texte copié ✓".into();
+                                    } else {
+                                        self.status = "texte reconnu".into();
                                     }
-                                    self.status = "texte copié ✓".into();
                                 }
                             }
                             Err(e) => self.status = e,
@@ -285,6 +279,9 @@ impl ScantoutApp {
     fn toggle_main(&mut self, ctx: &egui::Context) {
         self.main_visible = !self.main_visible;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.main_visible));
+        if self.main_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
     }
 }
 
@@ -301,13 +298,24 @@ impl eframe::App for ScantoutApp {
         }
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
-                self.picking = true;
+                if self.main_visible {
+                    self.picking = true;
+                } else {
+                    self.main_visible = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
             }
         }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if ui.input(|i| i.viewport().close_requested()) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.main_visible = false;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
         if let Some(t) = self.auto_capture_at {
             if std::time::Instant::now() >= t {
                 self.auto_capture_at = None;
@@ -365,6 +373,9 @@ impl eframe::App for ScantoutApp {
             ui.add(egui::Image::from_texture(tex).max_width(tex.size_vec2().x * scale));
         }
         ui.horizontal(|ui| {
+            ui.checkbox(&mut self.auto_copy, "Copie auto dans le presse-papier");
+        });
+        ui.horizontal(|ui| {
             ui.label("Langue OCR :");
             egui::ComboBox::from_id_salt("ocr_lang")
                 .selected_text(self.ocr_lang.label())
@@ -416,7 +427,7 @@ impl eframe::App for ScantoutApp {
                                 ui.add(egui::Image::from_texture(tex).fit_to_exact_size(egui::vec2(72.0, 46.0)));
                             }
                             ui.vertical(|ui| {
-                                ui.small(fmt_ts_utc(*ts));
+                                ui.small(fmt_ts_local(*ts));
                                 let preview: String = txt.as_ref()
                                     .and_then(|p| std::fs::read_to_string(p).ok())
                                     .map(|t| t.split('\n').take(2).collect::<Vec<_>>().join(" "))
