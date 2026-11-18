@@ -5,26 +5,37 @@ use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, Global
 use tray_icon::{TrayIconBuilder, Icon};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 
-fn capture_zone(zone: [i32; 4]) -> Result<image::RgbaImage, String> {
+// zone en points logiques (egui) ; ppp = pixels_per_point de la fenêtre overlay
+fn capture_zone(zone: [i32; 4], ppp: f32) -> Result<image::RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     if monitors.is_empty() { return Err("aucun écran détecté".into()); }
-    let [zx, zy, zw, zh] = zone;
-    // écran contenant le centre de la zone (sinon le premier)
-    let cx = zx + zw as i32 / 2;
-    let cy = zy + zh as i32 / 2;
+    // conversion en pixels physiques
+    let zx = (zone[0] as f32 * ppp).round() as i32;
+    let zy = (zone[1] as f32 * ppp).round() as i32;
+    let zw = (zone[2] as f32 * ppp).round().max(1.0) as i32;
+    let zh = (zone[3] as f32 * ppp).round().max(1.0) as i32;
+    let cx = zx + zw / 2;
+    let cy = zy + zh / 2;
+    let phys = |m: &xcap::Monitor| -> (i32, i32, i32, i32) {
+        let mx = m.x().unwrap_or(0);
+        let my = m.y().unwrap_or(0);
+        let s = m.scale_factor().unwrap_or(1.0);
+        // les positions xcap sont déjà en pixels physiques, la taille aussi
+        let _ = s;
+        (mx, my, m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32)
+    };
     let mon = monitors.iter().find(|m| {
-        let (mx, my, mw, mh) = (m.x().unwrap_or(0), m.y().unwrap_or(0), m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32);
+        let (mx, my, mw, mh) = phys(m);
         cx >= mx && cy >= my && cx < mx + mw && cy < my + mh
     }).unwrap_or(&monitors[0]);
-    let mx = mon.x().unwrap_or(0);
-    let my = mon.y().unwrap_or(0);
+    let (mx, my, _mw, _mh) = phys(mon);
     let img = mon.capture_image().map_err(|e| e.to_string())?;
     let iw = img.width() as i32;
     let ih = img.height() as i32;
     let x = (zx - mx).clamp(0, iw.saturating_sub(1));
     let y = (zy - my).clamp(0, ih.saturating_sub(1));
-    let w = (zw).min(iw - x);
-    let h = (zh).min(ih - y);
+    let w = zw.min(iw - x);
+    let h = zh.min(ih - y);
     if w <= 0 || h <= 0 { return Err("zone hors écran".into()); }
     Ok(image::imageops::crop_imm(&img, x as u32, y as u32, w as u32, h as u32).to_image())
 }
@@ -65,6 +76,7 @@ fn main() -> eframe::Result<()> {
                 text: String::new(),
                 status: "capture inactive".into(),
                 zone: None,
+                zone_ppp: 1.0,
                 picking: false,
                 drag_start: None,
                 drag_now: None,
@@ -94,6 +106,7 @@ struct ScantoutApp {
     text: String,
     status: String,
     zone: Option<[i32; 4]>,
+    zone_ppp: f32,
     picking: bool,
     drag_start: Option<egui::Pos2>,
     drag_now: Option<egui::Pos2>,
@@ -120,8 +133,10 @@ impl eframe::App for ScantoutApp {
                 _ => {}
             }
         }
-        if let Ok(_event) = GlobalHotKeyEvent::receiver().try_recv() {
-            self.toggle_main(ctx);
+        if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+            if event.state == global_hotkey::HotKeyState::Pressed {
+                self.toggle_main(ctx);
+            }
         }
     }
 
@@ -162,8 +177,9 @@ impl eframe::App for ScantoutApp {
                 self.picking = true;
             }
             if ui.button("Capturer").clicked() {
+                let ppp = self.zone_ppp;
                 match self.zone {
-                    Some(z) => match capture_zone(z) {
+                    Some(z) => match capture_zone(z, ppp) {
                         Ok(img) => {
                             let size = [img.width() as usize, img.height() as usize];
                             let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
@@ -193,6 +209,8 @@ impl eframe::App for ScantoutApp {
             let picking = &mut self.picking;
             let zone = &mut self.zone;
             let status = &mut self.status;
+            let zone_ppp = &mut self.zone_ppp;
+            let ctx_ppp = ui.ctx().pixels_per_point();
             ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("zone-overlay"), builder, |ui, _class| {
                 let screen = ui.max_rect();
                 let painter = ui.painter();
@@ -231,6 +249,7 @@ impl eframe::App for ScantoutApp {
                         let (y0, y1) = (s.y.min(e.y).round() as i32, s.y.max(e.y).round() as i32);
                         if x1 - x0 >= 20 && y1 - y0 >= 20 {
                             *zone = Some([x0, y0, x1 - x0, y1 - y0]);
+                            *zone_ppp = ctx_ppp;
                             *status = format!("zone : {}×{} @ {},{}", x1 - x0, y1 - y0, x0, y0);
                         }
                     }
