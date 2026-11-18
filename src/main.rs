@@ -205,6 +205,7 @@ impl ScantoutApp {
         self.mini = true;
         self.mini_collapsing = None;
         self.mini_since = Some(std::time::Instant::now());
+        self.main_visible = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
