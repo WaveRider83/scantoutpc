@@ -130,6 +130,7 @@ fn main() -> eframe::Result<()> {
                 capture: None,
                 overlay_active: false,
                 overlay_shots: None,
+                pending_capture: None,
                 auto_capture_at: None,
                 pick_at: None,
                 keep_history: true,
@@ -383,6 +384,9 @@ struct OverlayShot {
     logical_size: [f32; 2],
     scale: f32,
     tex: egui::TextureHandle,
+    raw: std::sync::Arc<Vec<u8>>,
+    px_w: u32,
+    px_h: u32,
 }
 
 struct TrayOptions {
@@ -408,6 +412,7 @@ struct ScantoutApp {
     capture: Option<egui::TextureHandle>,
     overlay_active: bool,
     overlay_shots: Option<Vec<OverlayShot>>,
+    pending_capture: Option<image::RgbaImage>,
     auto_capture_at: Option<std::time::Instant>,
     pick_at: Option<std::time::Instant>,
     keep_history: bool,
@@ -433,7 +438,7 @@ impl ScantoutApp {
     fn do_capture(&mut self, ctx: &egui::Context) {
         dbg_log("do_capture start");
         match self.zone.clone() {
-            Some(z) => match capture_zone(&z) {
+            Some(z) => match self.pending_capture.take().map(Ok).unwrap_or_else(|| capture_zone(&z)) {
                 Ok(img) => {
                     dbg_log("capture_zone ok");
                     let dump = std::env::temp_dir().join("scantoutpc_capture.png");
@@ -698,6 +703,7 @@ impl eframe::App for ScantoutApp {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         if self.picking && self.overlay_shots.is_none() {
+            self.pending_capture = None;
             let mut shots = Vec::new();
             if let Ok(monitors) = xcap::Monitor::all() {
                 for (i, m) in monitors.iter().enumerate() {
@@ -715,6 +721,9 @@ impl eframe::App for ScantoutApp {
                             logical_size: [w as f32 / scale, h as f32 / scale],
                             scale,
                             tex,
+                            raw: std::sync::Arc::new(raw),
+                            px_w: w as u32,
+                            px_h: h as u32,
                         });
                     }
                 }
@@ -862,12 +871,16 @@ impl eframe::App for ScantoutApp {
                 let tex = shot.tex.clone();
                 let mon_name = shot.name.clone();
                 let scale = shot.scale;
+                let shot_raw = std::sync::Arc::clone(&shot.raw);
+                let shot_px_w = shot.px_w;
+                let shot_px_h = shot.px_h;
                 let drag_start = &mut self.drag_start;
                 let drag_now = &mut self.drag_now;
                 let drag_screen = &mut self.drag_screen;
                 let picking = &mut self.picking;
                 let zone = &mut self.zone;
                 let auto_capture_at = &mut self.auto_capture_at;
+                let pending_capture = &mut self.pending_capture;
                 let status = &mut self.status;
                 let scale = scale;
                 ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("zone-overlay", idx)), builder, |ui, _class| {
@@ -912,6 +925,29 @@ impl eframe::App for ScantoutApp {
                             let (x0, x1) = (s.x.min(e.x).round() as i32, s.x.max(e.x).round() as i32);
                             let (y0, y1) = (s.y.min(e.y).round() as i32, s.y.max(e.y).round() as i32);
                             if x1 - x0 >= 20 && y1 - y0 >= 20 {
+                                // decouper dans l'image figee affichee (pas de re-capture live)
+                                if let (Some(raw), Some(rw), Some(rh)) = (Some(shot_raw.clone()), Some(shot_px_w), Some(shot_px_h)) {
+                                    let sc = scale;
+                                    let cx = (x0 as f32 * sc).round().max(0.0) as i64;
+                                    let cy = (y0 as f32 * sc).round().max(0.0) as i64;
+                                    let cw = ((x1 - x0) as f32 * sc).round().max(1.0) as i64;
+                                    let ch = ((y1 - y0) as f32 * sc).round().max(1.0) as i64;
+                                    let iw = rw as i64; let ih = rh as i64;
+                                    let cx = cx.min(iw - 1); let cy = cy.min(ih - 1);
+                                    let cw = cw.min(iw - cx); let ch = ch.min(ih - cy);
+                                    if cw > 0 && ch > 0 {
+                                        let mut out = Vec::with_capacity((cw * ch * 4) as usize);
+                                        let stride = iw as usize * 4;
+                                        let row_bytes = (cw * 4) as usize;
+                                        for yy in 0..ch {
+                                            let start = ((cy + yy) as usize) * stride + (cx as usize) * 4;
+                                            out.extend_from_slice(&raw[start..start + row_bytes]);
+                                        }
+                                        if let Some(img) = image::RgbaImage::from_raw(cw as u32, ch as u32, out) {
+                                            *pending_capture = Some(img);
+                                        }
+                                    }
+                                }
                                 *zone = Some(PickedZone { monitor: mon_name.clone(), x: x0, y: y0, w: x1 - x0, h: y1 - y0, ppp: scale });
                                 *status = format!("zone : {}×{} sur {}", x1 - x0, y1 - y0, mon_name);
                                 *auto_capture_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
