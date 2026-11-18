@@ -82,7 +82,7 @@ fn main() -> eframe::Result<()> {
                 main_visible: true,
                 capture: None,
                 overlay_active: false,
-                auto_capture: false,
+                auto_capture_at: None,
                 _hotkey_manager: hotkey_manager,
             }))
         }),
@@ -114,7 +114,7 @@ struct ScantoutApp {
     main_visible: bool,
     capture: Option<egui::TextureHandle>,
     overlay_active: bool,
-    auto_capture: bool,
+    auto_capture_at: Option<std::time::Instant>,
     _hotkey_manager: GlobalHotKeyManager,
 }
 
@@ -162,8 +162,11 @@ impl eframe::App for ScantoutApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if std::mem::take(&mut self.auto_capture) {
-            self.do_capture(&ctx);
+        if let Some(t) = self.auto_capture_at {
+            if std::time::Instant::now() >= t {
+                self.auto_capture_at = None;
+                self.do_capture(&ctx);
+            }
         }
         if self.picking && !self.overlay_active {
             let mut v = egui::Visuals::dark();
@@ -250,7 +253,7 @@ impl eframe::App for ScantoutApp {
                 let drag_screen = &mut self.drag_screen;
                 let picking = &mut self.picking;
                 let zone = &mut self.zone;
-                let auto_capture = &mut self.auto_capture;
+                let auto_capture_at = &mut self.auto_capture_at;
                 let status = &mut self.status;
                 let scale = scale;
                 ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("zone-overlay", idx)), builder, |ui, _class| {
@@ -296,7 +299,7 @@ impl eframe::App for ScantoutApp {
                             if x1 - x0 >= 20 && y1 - y0 >= 20 {
                                 *zone = Some(PickedZone { monitor: mon_name.clone(), x: x0, y: y0, w: x1 - x0, h: y1 - y0, ppp: scale });
                                 *status = format!("zone : {}×{} sur {}", x1 - x0, y1 - y0, mon_name);
-                                *auto_capture = true;
+                                *auto_capture_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
                             }
                         }
                         *picking = false;
