@@ -162,6 +162,12 @@ impl ScantoutApp {
                 Ok(img) => {
                     let dump = std::env::temp_dir().join("scantoutpc_capture.png");
                     let _ = img.save(&dump);
+                    // DEBUG TEMP : dump de la capture dans le dossier partagé pour analyse (a retirer)
+                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    let dbg_dir = std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures");
+                    if std::fs::create_dir_all(&dbg_dir).is_ok() {
+                        let _ = img.save(dbg_dir.join(format!("cap_{ts}.png")));
+                    }
                     let size = [img.width() as usize, img.height() as usize];
                     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
@@ -176,9 +182,15 @@ impl ScantoutApp {
                             Err(e) => { self.status = format!("modèles OCR: {e}"); }
                         }
                     }
+                    let dbg_dir = std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures");
                     if let Some(engine) = &self.ocr_engine {
                         match engine.recognize(&dynimg) {
                             Ok(text) => {
+                                // DEBUG TEMP : texte OCR dans le dossier partagé
+                                if dbg_dir.exists() {
+                                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                                    let _ = std::fs::write(dbg_dir.join(format!("ocr_{ts}.txt")), &text);
+                                }
                                 let text = text.trim().to_string();
                                 if text.is_empty() {
                                     self.status = "aucun texte détecté".into();
