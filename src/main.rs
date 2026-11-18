@@ -61,17 +61,19 @@ fn main() -> eframe::Result<()> {
             }
         }
     }
-    let (hotkey, start_mini) = load_config();
-    let opt_auto = CheckMenuItem::with_id("opt_auto", "Copie auto dans le presse-papier", true, true, None);
-    let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, true, None);
+    let cfg = load_config();
+    let hotkey = cfg.hotkey;
+    dbg_log(&format!("config: {:?}", config_path()));
+    let opt_auto = CheckMenuItem::with_id("opt_auto", "Copie auto dans le presse-papier", true, cfg.auto_copy, None);
+    let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, cfg.keep_history, None);
     let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
-    let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, false, None);
+    let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, cfg.light_mode, None);
     let opt_autostart = CheckMenuItem::with_id("opt_autostart", "Démarrer avec Windows", true, autostart_enabled(), None);
-    let opt_start_mini = CheckMenuItem::with_id("opt_start_mini", "Réduire au lancement", true, start_mini, None);
-    let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, false, None);
-    let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
-    let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
-    let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
+    let opt_start_mini = CheckMenuItem::with_id("opt_start_mini", "Réduire au lancement", true, cfg.start_mini, None);
+    let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, cfg.auto_resize, None);
+    let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, cfg.ocr_lang == "latin", None);
+    let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, cfg.ocr_lang == "zh", None);
+    let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, cfg.ocr_lang == "ko", None);
     let options_sub = Submenu::with_id("options", "Options", true);
     let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
@@ -106,7 +108,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ScantoutPC")
-            .with_inner_size(if start_mini { [MINI_W, MINI_H] } else { [460.0, 360.0] })
+            .with_inner_size(if cfg.start_mini { [MINI_W, MINI_H] } else { [460.0, 360.0] })
             .with_min_inner_size([MINI_W, MINI_H])
             .with_decorations(true)
             .with_always_on_top()
@@ -135,19 +137,19 @@ fn main() -> eframe::Result<()> {
                 pending_capture: None,
                 auto_capture_at: None,
                 pick_at: None,
-                keep_history: true,
-                auto_copy: true,
-                light_mode: false,
-                start_mini,
-                start_mini_pending: start_mini,
-                auto_resize: false,
+                keep_history: cfg.keep_history,
+                auto_copy: cfg.auto_copy,
+                light_mode: cfg.light_mode,
+                start_mini: cfg.start_mini,
+                start_mini_pending: cfg.start_mini,
+                auto_resize: cfg.auto_resize,
                 mini: false,
                 mini_since: None,
                 mini_collapsing: None,
                 prev_rect: None,
                 hist_tex: std::collections::HashMap::new(),
                 tray_opts,
-                ocr_lang: ocr::OcrLang::Latin,
+                ocr_lang: ocr_lang_from_key(&cfg.ocr_lang),
                 ocr_engine: None,
                 hotkey_label: hotkey_label(&hotkey),
                 hotkey,
@@ -298,15 +300,11 @@ fn exe_dir() -> Option<std::path::PathBuf> {
 }
 
 fn config_path() -> std::path::PathBuf {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let d = std::path::PathBuf::from(appdata).join("ScantoutPC");
-        let _ = std::fs::create_dir_all(&d);
-        d.join("config.txt")
-    } else if let Some(d) = exe_dir() {
-        d.join("scantoutpc_hotkey.txt")
-    } else {
-        std::path::PathBuf::from("scantoutpc_hotkey.txt")
-    }
+    exe_dir().map(|d| d.join("config.ini")).unwrap_or_else(|| std::path::PathBuf::from("config.ini"))
+}
+
+fn legacy_config_path() -> Option<std::path::PathBuf> {
+    std::env::var("APPDATA").ok().map(|d| std::path::PathBuf::from(d).join("ScantoutPC").join("config.txt"))
 }
 
 fn default_hotkey() -> HotKey {
@@ -337,24 +335,82 @@ fn set_autostart(enable: bool) -> bool {
     r.map(|s| s.success()).unwrap_or(false)
 }
 
-fn load_config() -> (HotKey, bool) {
-    let raw = std::fs::read_to_string(config_path()).unwrap_or_default();
-    let mut hk = None;
-    let mut start_mini = false;
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() { continue; }
-        match line.split_once('=') {
-            Some(("hotkey", v)) => hk = v.trim().parse::<HotKey>().ok(),
-            Some(("start_mini", v)) => start_mini = v.trim() == "1",
-            _ => { if hk.is_none() { hk = line.parse::<HotKey>().ok(); } }
-        }
-    }
-    (hk.unwrap_or_else(default_hotkey), start_mini)
+struct AppConfig {
+    hotkey: HotKey,
+    start_mini: bool,
+    auto_copy: bool,
+    keep_history: bool,
+    light_mode: bool,
+    auto_resize: bool,
+    ocr_lang: String,
 }
 
-fn save_config(hk: &HotKey, start_mini: bool) {
-    let _ = std::fs::write(config_path(), format!("hotkey={}\nstart_mini={}\n", hk, if start_mini { 1 } else { 0 }));
+fn ocr_lang_from_key(v: &str) -> ocr::OcrLang {
+    match v {
+        "zh" => ocr::OcrLang::Chinese,
+        "ko" => ocr::OcrLang::Korean,
+        _ => ocr::OcrLang::Latin,
+    }
+}
+
+fn ocr_lang_key(l: &ocr::OcrLang) -> &'static str {
+    match l {
+        ocr::OcrLang::Chinese => "zh",
+        ocr::OcrLang::Korean => "ko",
+        _ => "latin",
+    }
+}
+
+fn parse_bool(v: &str) -> bool {
+    matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
+fn load_config() -> AppConfig {
+    let mut cfg = AppConfig {
+        hotkey: default_hotkey(),
+        start_mini: false,
+        auto_copy: true,
+        keep_history: true,
+        light_mode: false,
+        auto_resize: false,
+        ocr_lang: "latin".to_string(),
+    };
+    // config.ini a cote de l'exe ; migration douce depuis l'ancien %APPDATA% si absent
+    let raw = std::fs::read_to_string(config_path()).ok().or_else(|| legacy_config_path().and_then(|p| std::fs::read_to_string(p).ok()));
+    if let Some(raw) = raw {
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('[') || line.starts_with(';') || line.starts_with('#') { continue; }
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let k = k.trim().to_ascii_lowercase();
+            let v = v.trim();
+            match k.as_str() {
+                "hotkey" => { if let Ok(h) = v.parse::<HotKey>() { cfg.hotkey = h; } }
+                "start_mini" => cfg.start_mini = parse_bool(v),
+                "auto_copy" => cfg.auto_copy = parse_bool(v),
+                "keep_history" => cfg.keep_history = parse_bool(v),
+                "light_mode" => cfg.light_mode = parse_bool(v),
+                "auto_resize" => cfg.auto_resize = parse_bool(v),
+                "ocr_lang" => { if matches!(v, "latin" | "zh" | "ko") { cfg.ocr_lang = v.to_string(); } }
+                _ => {}
+            }
+        }
+    }
+    cfg
+}
+
+fn save_config(cfg: &AppConfig) {
+    let body = format!(
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\n",
+        cfg.hotkey,
+        cfg.start_mini as u8,
+        cfg.auto_copy as u8,
+        cfg.keep_history as u8,
+        cfg.light_mode as u8,
+        cfg.auto_resize as u8,
+        cfg.ocr_lang
+    );
+    let _ = std::fs::write(config_path(), body);
 }
 
 fn egui_mods(m: &egui::Modifiers) -> Modifiers {
@@ -553,6 +609,18 @@ impl ScantoutApp {
         } // fenetre normale visible : on ne la reduit pas apres la capture
     }
 
+    fn save_cfg(&self) {
+        save_config(&AppConfig {
+            hotkey: self.hotkey,
+            start_mini: self.start_mini,
+            auto_copy: self.auto_copy,
+            keep_history: self.keep_history,
+            light_mode: self.light_mode,
+            auto_resize: self.auto_resize,
+            ocr_lang: ocr_lang_key(&self.ocr_lang).to_string(),
+        });
+    }
+
     fn toggle_main(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         dbg_log(&format!("tray toggle: mini={} main_visible={} minimized={}", self.mini, self.main_visible, minimized));
@@ -607,7 +675,7 @@ impl eframe::App for ScantoutApp {
                                 Ok(()) => {
                                     self.hotkey = new_hk;
                                     self.hotkey_label = hotkey_label(&new_hk);
-                                    save_config(&new_hk, self.start_mini);
+                                    self.save_cfg();
                                     self.status = format!("raccourci : {}", self.hotkey_label);
                                     dbg_log(&format!("hotkey set {}", self.hotkey_label));
                                 }
@@ -671,10 +739,12 @@ impl eframe::App for ScantoutApp {
                 "opt_auto" => {
                     self.auto_copy = !self.auto_copy;
                     self.tray_opts.auto_copy.set_checked(self.auto_copy);
+                    self.save_cfg();
                 }
                 "opt_keep" => {
                     self.keep_history = !self.keep_history;
                     self.tray_opts.keep_history.set_checked(self.keep_history);
+                    self.save_cfg();
                 }
                 "opt_autostart" => {
                     let want = !self.tray_opts.autostart.is_checked();
@@ -684,15 +754,17 @@ impl eframe::App for ScantoutApp {
                 "opt_start_mini" => {
                     self.start_mini = !self.start_mini;
                     self.tray_opts.start_mini.set_checked(self.start_mini);
-                    save_config(&self.hotkey, self.start_mini);
+                    self.save_cfg();
                 }
                 "opt_resize" => {
                     self.auto_resize = !self.auto_resize;
                     self.tray_opts.resize.set_checked(self.auto_resize);
+                    self.save_cfg();
                 }
                 "opt_light" => {
                     self.light_mode = !self.light_mode;
                     self.tray_opts.light.set_checked(self.light_mode);
+                    self.save_cfg();
                 }
                 "opt_clear" => {
                     clear_history_files();
@@ -709,6 +781,7 @@ impl eframe::App for ScantoutApp {
                     self.tray_opts.latin.set_checked(ev == "lang_latin");
                     self.tray_opts.zh.set_checked(ev == "lang_zh");
                     self.tray_opts.ko.set_checked(ev == "lang_ko");
+                    self.save_cfg();
                 }
                 _ => {}
             }
