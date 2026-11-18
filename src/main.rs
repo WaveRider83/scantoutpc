@@ -124,6 +124,19 @@ fn icon_rgba() -> (Vec<u8>, u32, u32) {
     (rgba, 32, 32)
 }
 
+
+// DEBUG TEMP : dossiers candidats pour les dumps (a retirer)
+fn capture_dump_dir() -> Vec<std::path::PathBuf> {
+    let mut cand: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("SCANTOUT_CAPTURES") { cand.push(std::path::PathBuf::from(p)); }
+    cand.push(std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures"));
+    cand.push(std::path::PathBuf::from(r"\\local-share\scantoutpc\captures"));
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() { cand.push(d.join("captures")); }
+    }
+    cand.into_iter().filter(|d| d.exists() || std::fs::create_dir_all(d).is_ok()).collect()
+}
+
 fn make_icon() -> Icon {
     let (rgba, w, h) = icon_rgba();
     Icon::from_rgba(rgba, w, h).expect("icon")
@@ -162,12 +175,26 @@ impl ScantoutApp {
                 Ok(img) => {
                     let dump = std::env::temp_dir().join("scantoutpc_capture.png");
                     let _ = img.save(&dump);
-                    // DEBUG TEMP : dump de la capture dans le dossier partagé pour analyse (a retirer)
+                    // DEBUG TEMP : dump de la capture pour analyse (a retirer)
                     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                    let dbg_dir = std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures");
-                    if std::fs::create_dir_all(&dbg_dir).is_ok() {
-                        let _ = img.save(dbg_dir.join(format!("cap_{ts}.png")));
+                    let mut cand: Vec<std::path::PathBuf> = Vec::new();
+                    if let Ok(p) = std::env::var("SCANTOUT_CAPTURES") { cand.push(std::path::PathBuf::from(p)); }
+                    cand.push(std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures"));
+                    cand.push(std::path::PathBuf::from(r"\\local-share\scantoutpc\captures"));
+                    if let Ok(exe) = std::env::current_exe() {
+                        if let Some(d) = exe.parent() { cand.push(d.join("captures")); }
                     }
+                    let mut dumped = false;
+                    for d in cand {
+                        if std::fs::create_dir_all(&d).is_ok() {
+                            if img.save(d.join(format!("cap_{ts}.png"))).is_ok() {
+                                self.status = format!("{} (dump: {})", self.status, d.display());
+                                dumped = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !dumped { self.status = format!("{} (dump: echec)", self.status); }
                     let size = [img.width() as usize, img.height() as usize];
                     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
@@ -182,14 +209,13 @@ impl ScantoutApp {
                             Err(e) => { self.status = format!("modèles OCR: {e}"); }
                         }
                     }
-                    let dbg_dir = std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures");
                     if let Some(engine) = &self.ocr_engine {
                         match engine.recognize(&dynimg) {
                             Ok(text) => {
-                                // DEBUG TEMP : texte OCR dans le dossier partagé
-                                if dbg_dir.exists() {
+                                // DEBUG TEMP : texte OCR a cote des dumps
+                                for d in capture_dump_dir() {
                                     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                                    let _ = std::fs::write(dbg_dir.join(format!("ocr_{ts}.txt")), &text);
+                                    let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &text);
                                 }
                                 let text = text.trim().to_string();
                                 if text.is_empty() {
