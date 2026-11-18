@@ -138,6 +138,9 @@ fn main() -> eframe::Result<()> {
                 show_on_capture: true,
                 auto_resize: false,
                 mini: false,
+                mini_since: None,
+                mini_collapsing: None,
+                prev_rect: None,
                 hist_tex: std::collections::HashMap::new(),
                 tray_opts,
                 ocr_lang: ocr::OcrLang::Latin,
@@ -194,21 +197,41 @@ const NORMAL_SIZE: egui::Vec2 = egui::vec2(460.0, 360.0);
 impl ScantoutApp {
     fn enter_mini(&mut self, ctx: &egui::Context) {
         dbg_log("enter_mini");
+        if !self.mini {
+            self.prev_rect = ctx.input(|i| i.viewport().outer_rect);
+        }
         self.mini = true;
+        self.mini_collapsing = None;
+        self.mini_since = Some(std::time::Instant::now());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
         if let Some(ms) = ctx.input(|i| i.viewport().monitor_size) {
             let taskbar = 46.0;
-            let pos = egui::pos2(ms.x - MINI_W - 10.0, ms.y - MINI_H - taskbar);
+            let pos = egui::pos2((ms.x - MINI_W - 10.0).max(0.0), (ms.y - MINI_H - taskbar).max(0.0));
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     }
     fn exit_mini(&mut self, ctx: &egui::Context) {
         dbg_log("exit_mini");
         self.mini = false;
+        self.mini_collapsing = None;
+        self.mini_since = None;
         self.main_visible = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(NORMAL_SIZE));
+        let mon = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1920.0, 1080.0));
+        if let Some(r) = self.prev_rect {
+            let x = r.min.x.clamp(0.0, (mon.x - NORMAL_SIZE.x).max(0.0));
+            let y = r.min.y.clamp(0.0, (mon.y - NORMAL_SIZE.y).max(0.0));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                (mon.x - NORMAL_SIZE.x - 10.0).max(0.0),
+                (mon.y - NORMAL_SIZE.y - 46.0).max(0.0),
+            )));
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 }
@@ -393,6 +416,9 @@ struct ScantoutApp {
     show_on_capture: bool,
     auto_resize: bool,
     mini: bool,
+    mini_since: Option<std::time::Instant>,
+    mini_collapsing: Option<std::time::Instant>,
+    prev_rect: Option<egui::Rect>,
     hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
     tray_opts: TrayOptions,
     ocr_lang: ocr::OcrLang,
@@ -546,6 +572,29 @@ impl eframe::App for ScantoutApp {
                 }
             }
         }
+        // Mini : disparition apres 3 s (animation de recollement)
+        if self.mini && self.mini_collapsing.is_none() {
+            if let Some(t0) = self.mini_since {
+                if t0.elapsed() >= std::time::Duration::from_secs(3) {
+                    self.mini_collapsing = Some(std::time::Instant::now());
+                    dbg_log("mini collapse start");
+                }
+            }
+        }
+        if let Some(t0) = self.mini_collapsing {
+            let p = (t0.elapsed().as_secs_f32() / 0.25).min(1.0);
+            let h = (MINI_H * (1.0 - p)).max(1.0);
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, h)));
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            if p >= 1.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
+                self.mini_collapsing = None;
+                self.mini_since = None;
+                self.main_visible = false;
+                dbg_log("mini hidden");
+            }
+        }
         if let Some(t) = self.auto_capture_at {
             if std::time::Instant::now() >= t {
                 self.auto_capture_at = None;
@@ -613,9 +662,15 @@ impl eframe::App for ScantoutApp {
                 // creer les overlays.
                 let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
                 if !self.show_on_capture {
+                    let was_hidden = !self.main_visible || minimized;
                     self.enter_mini(ctx);
-                    self.picking = true;
-                    dbg_log("picking=true (mini)");
+                    if was_hidden {
+                        self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+                        dbg_log("mini + pick differe");
+                    } else {
+                        self.picking = true;
+                        dbg_log("picking=true (mini)");
+                    }
                 } else if self.mini {
                     self.exit_mini(ctx);
                     self.picking = true;
@@ -788,7 +843,11 @@ impl eframe::App for ScantoutApp {
         });
 
         }
-        if self.picking {
+        let parent_visible = ctx.input(|i| i.viewport().visible().unwrap_or(true);
+        if self.picking && !parent_visible {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        if self.picking && parent_visible {
             let shots: Vec<&OverlayShot> = self.overlay_shots.as_ref().map(|v| v.iter().collect()).unwrap_or_default();
             for (idx, shot) in shots.into_iter().enumerate() {
                 let builder = egui::ViewportBuilder::default()
