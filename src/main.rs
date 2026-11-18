@@ -66,16 +66,18 @@ fn main() -> eframe::Result<()> {
     let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
     let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, false, None);
     let opt_showwin = CheckMenuItem::with_id("opt_showwin", "Afficher la fenêtre après la capture", true, true, None);
+    let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, false, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_showwin, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_showwin, &opt_resize, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
         light: opt_light.clone(),
         showwin: opt_showwin.clone(),
+        resize: opt_resize.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
         ko: lang_ko.clone(),
@@ -134,6 +136,7 @@ fn main() -> eframe::Result<()> {
                 auto_copy: true,
                 light_mode: false,
                 show_on_capture: true,
+                auto_resize: false,
                 mini: false,
                 hist_tex: std::collections::HashMap::new(),
                 tray_opts,
@@ -367,6 +370,7 @@ struct TrayOptions {
     zh: CheckMenuItem,
     ko: CheckMenuItem,
     showwin: CheckMenuItem,
+    resize: CheckMenuItem,
 }
 
 struct ScantoutApp {
@@ -387,6 +391,7 @@ struct ScantoutApp {
     auto_copy: bool,
     light_mode: bool,
     show_on_capture: bool,
+    auto_resize: bool,
     mini: bool,
     hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
     tray_opts: TrayOptions,
@@ -420,6 +425,13 @@ impl ScantoutApp {
                     let size = [img.width() as usize, img.height() as usize];
                     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
+                    if self.auto_resize && self.show_on_capture {
+                        let pp = ctx.pixels_per_point();
+                        let w = (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0);
+                        let h = (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+                        dbg_log(&format!("auto-resize {w}x{h}"));
+                    }
                     let dynimg = image::DynamicImage::ImageRgba8(img);
                     self.status = "ocr…".into();
                     let lang = self.ocr_lang;
@@ -564,6 +576,10 @@ impl eframe::App for ScantoutApp {
                     self.show_on_capture = !self.show_on_capture;
                     self.tray_opts.showwin.set_checked(self.show_on_capture);
                 }
+                "opt_resize" => {
+                    self.auto_resize = !self.auto_resize;
+                    self.tray_opts.resize.set_checked(self.auto_resize);
+                }
                 "opt_light" => {
                     self.light_mode = !self.light_mode;
                     self.tray_opts.light.set_checked(self.light_mode);
@@ -626,15 +642,6 @@ impl eframe::App for ScantoutApp {
             self.main_visible = false;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
-        if self.mini {
-            ui.horizontal_centered(|ui| {
-                ui.add_space(2.0);
-                if ui.button(egui::RichText::new("● ScantoutPC — cliquer pour agrandir").small()).clicked() {
-                    self.exit_mini(ui.ctx());
-                }
-            });
-            return;
-        }
         if self.picking && self.overlay_shots.is_none() {
             let mut shots = Vec::new();
             if let Ok(monitors) = xcap::Monitor::all() {
@@ -674,6 +681,14 @@ impl eframe::App for ScantoutApp {
                 }
             }
         }
+        if self.mini {
+            ui.horizontal_centered(|ui| {
+                ui.add_space(2.0);
+                if ui.button(egui::RichText::new("● ScantoutPC — cliquer pour agrandir").small()).clicked() {
+                    self.exit_mini(ui.ctx());
+                }
+            });
+        } else {
         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
             ui.add(egui::TextEdit::multiline(&mut self.text)
                 .desired_width(f32::INFINITY)
@@ -772,6 +787,7 @@ impl eframe::App for ScantoutApp {
             });
         });
 
+        }
         if self.picking {
             let shots: Vec<&OverlayShot> = self.overlay_shots.as_ref().map(|v| v.iter().collect()).unwrap_or_default();
             for (idx, shot) in shots.into_iter().enumerate() {
