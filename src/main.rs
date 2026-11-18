@@ -82,6 +82,7 @@ fn main() -> eframe::Result<()> {
                 main_visible: true,
                 capture: None,
                 overlay_active: false,
+                auto_capture: false,
                 _hotkey_manager: hotkey_manager,
             }))
         }),
@@ -113,10 +114,28 @@ struct ScantoutApp {
     main_visible: bool,
     capture: Option<egui::TextureHandle>,
     overlay_active: bool,
+    auto_capture: bool,
     _hotkey_manager: GlobalHotKeyManager,
 }
 
 impl ScantoutApp {
+    fn do_capture(&mut self, ctx: &egui::Context) {
+        match self.zone.clone() {
+            Some(z) => match capture_zone(&z) {
+                Ok(img) => {
+                    let dump = std::env::temp_dir().join("scantoutpc_capture.png");
+                    let _ = img.save(&dump);
+                    let size = [img.width() as usize, img.height() as usize];
+                    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                    self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
+                    self.status = format!("capturé {}×{}", img.width(), img.height());
+                }
+                Err(e) => self.status = format!("capture échouée: {e}"),
+            },
+            None => self.status = "définis d'abord une zone".into(),
+        }
+    }
+
     fn toggle_main(&mut self, ctx: &egui::Context) {
         self.main_visible = !self.main_visible;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.main_visible));
@@ -143,6 +162,9 @@ impl eframe::App for ScantoutApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if std::mem::take(&mut self.auto_capture) {
+            self.do_capture(&ctx);
+        }
         if self.picking && !self.overlay_active {
             let mut v = egui::Visuals::dark();
             v.window_fill = egui::Color32::TRANSPARENT;
@@ -155,6 +177,11 @@ impl eframe::App for ScantoutApp {
         if !self.picking && self.overlay_active {
             ctx.set_visuals(egui::Visuals::dark());
             self.overlay_active = false;
+            if let Ok(monitors) = xcap::Monitor::all() {
+                for i in 0..monitors.len() {
+                    ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of(("zone-overlay", i)), egui::ViewportCommand::Close);
+                }
+            }
         }
         let title = ui.horizontal(|ui| {
             ui.add_space(4.0);
@@ -191,20 +218,8 @@ impl eframe::App for ScantoutApp {
                 self.picking = true;
             }
             if ui.button("Capturer").clicked() {
-                match self.zone.clone() {
-                    Some(z) => match capture_zone(&z) {
-                        Ok(img) => {
-                            let dump = std::env::temp_dir().join("scantoutpc_capture.png");
-                            let _ = img.save(&dump);
-                            let size = [img.width() as usize, img.height() as usize];
-                            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-                            self.capture = Some(ui.ctx().load_texture("capture", color, egui::TextureOptions::LINEAR));
-                            self.status = format!("capturé {}×{}", img.width(), img.height());
-                        }
-                        Err(e) => self.status = format!("capture échouée: {e}"),
-                    },
-                    None => self.status = "définis d'abord une zone".into(),
-                }
+                let ctx2 = ui.ctx().clone();
+                self.do_capture(&ctx2);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(&self.status).small().color(egui::Color32::GRAY));
@@ -235,6 +250,7 @@ impl eframe::App for ScantoutApp {
                 let drag_screen = &mut self.drag_screen;
                 let picking = &mut self.picking;
                 let zone = &mut self.zone;
+                let auto_capture = &mut self.auto_capture;
                 let status = &mut self.status;
                 let scale = scale;
                 ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("zone-overlay", idx)), builder, |ui, _class| {
@@ -280,6 +296,7 @@ impl eframe::App for ScantoutApp {
                             if x1 - x0 >= 20 && y1 - y0 >= 20 {
                                 *zone = Some(PickedZone { monitor: mon_name.clone(), x: x0, y: y0, w: x1 - x0, h: y1 - y0, ppp: scale });
                                 *status = format!("zone : {}×{} sur {}", x1 - x0, y1 - y0, mon_name);
+                                *auto_capture = true;
                             }
                         }
                         *picking = false;
