@@ -61,22 +61,23 @@ fn main() -> eframe::Result<()> {
             }
         }
     }
+    let (hotkey, start_mini) = load_config();
     let opt_auto = CheckMenuItem::with_id("opt_auto", "Copie auto dans le presse-papier", true, true, None);
     let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, true, None);
     let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
     let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, false, None);
-    let opt_showwin = CheckMenuItem::with_id("opt_showwin", "Afficher la fenêtre après la capture", true, true, None);
+    let opt_start_mini = CheckMenuItem::with_id("opt_start_mini", "Réduire au lancement", true, start_mini, None);
     let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, false, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_showwin, &opt_resize, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_start_mini, &opt_resize, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
         light: opt_light.clone(),
-        showwin: opt_showwin.clone(),
+        start_mini: opt_start_mini.clone(),
         resize: opt_resize.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
@@ -95,7 +96,6 @@ fn main() -> eframe::Result<()> {
         .expect("tray icon");
 
     let hotkey_manager = GlobalHotKeyManager::new().expect("hotkey manager");
-    let hotkey = load_hotkey();
     if let Err(e) = hotkey_manager.register(hotkey) {
         eprintln!("hotkey register failed: {e:?}; fallback Ctrl+Shift+O");
         let _ = hotkey_manager.register(default_hotkey());
@@ -136,7 +136,8 @@ fn main() -> eframe::Result<()> {
                 keep_history: true,
                 auto_copy: true,
                 light_mode: false,
-                show_on_capture: true,
+                start_mini,
+                start_mini_pending: start_mini,
                 auto_resize: false,
                 mini: false,
                 mini_since: None,
@@ -309,15 +310,24 @@ fn default_hotkey() -> HotKey {
     HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO)
 }
 
-fn load_hotkey() -> HotKey {
-    std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|s| s.trim().parse::<HotKey>().ok())
-        .unwrap_or_else(default_hotkey)
+fn load_config() -> (HotKey, bool) {
+    let raw = std::fs::read_to_string(config_path()).unwrap_or_default();
+    let mut hk = None;
+    let mut start_mini = false;
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        match line.split_once('=') {
+            Some(("hotkey", v)) => hk = v.trim().parse::<HotKey>().ok(),
+            Some(("start_mini", v)) => start_mini = v.trim() == "1",
+            _ => { if hk.is_none() { hk = line.parse::<HotKey>().ok(); } }
+        }
+    }
+    (hk.unwrap_or_else(default_hotkey), start_mini)
 }
 
-fn save_hotkey(hk: &HotKey) {
-    let _ = std::fs::write(config_path(), hk.to_string());
+fn save_config(hk: &HotKey, start_mini: bool) {
+    let _ = std::fs::write(config_path(), format!("hotkey={}\nstart_mini={}\n", hk, if start_mini { 1 } else { 0 }));
 }
 
 fn egui_mods(m: &egui::Modifiers) -> Modifiers {
@@ -396,7 +406,7 @@ struct TrayOptions {
     latin: CheckMenuItem,
     zh: CheckMenuItem,
     ko: CheckMenuItem,
-    showwin: CheckMenuItem,
+    start_mini: CheckMenuItem,
     resize: CheckMenuItem,
 }
 
@@ -418,7 +428,8 @@ struct ScantoutApp {
     keep_history: bool,
     auto_copy: bool,
     light_mode: bool,
-    show_on_capture: bool,
+    start_mini: bool,
+    start_mini_pending: bool,
     auto_resize: bool,
     mini: bool,
     mini_since: Option<std::time::Instant>,
@@ -456,7 +467,7 @@ impl ScantoutApp {
                     let size = [img.width() as usize, img.height() as usize];
                     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
-                    if self.auto_resize && self.show_on_capture {
+                    if self.auto_resize {
                         let pp = ctx.pixels_per_point();
                         let w = (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0);
                         let h = (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0);
@@ -509,9 +520,7 @@ impl ScantoutApp {
             },
             None => self.status = "définis d'abord une zone".into(),
         }
-        if !self.show_on_capture {
-            self.enter_mini(ctx);
-        }
+        self.enter_mini(ctx);
     }
 
     fn toggle_main(&mut self, ctx: &egui::Context) {
@@ -538,12 +547,17 @@ impl eframe::App for ScantoutApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_visuals(if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() });
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if self.start_mini_pending {
+            self.start_mini_pending = false;
+            self.enter_mini(ctx);
+        }
         if self.recording {
             let events = ctx.input(|i| i.events.clone());
             for ev in events {
                 if let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = ev {
                     if key == egui::Key::Escape {
                         self.recording = false;
+                        let _ = self.hotkey_manager.register(self.hotkey);
                         self.status = "raccourci inchang\u{e9}".into();
                         break;
                     }
@@ -560,7 +574,7 @@ impl eframe::App for ScantoutApp {
                                 Ok(()) => {
                                     self.hotkey = new_hk;
                                     self.hotkey_label = hotkey_label(&new_hk);
-                                    save_hotkey(&new_hk);
+                                    save_config(&new_hk, self.start_mini);
                                     self.status = format!("raccourci : {}", self.hotkey_label);
                                     dbg_log(&format!("hotkey set {}", self.hotkey_label));
                                 }
@@ -626,9 +640,10 @@ impl eframe::App for ScantoutApp {
                     self.keep_history = !self.keep_history;
                     self.tray_opts.keep_history.set_checked(self.keep_history);
                 }
-                "opt_showwin" => {
-                    self.show_on_capture = !self.show_on_capture;
-                    self.tray_opts.showwin.set_checked(self.show_on_capture);
+                "opt_start_mini" => {
+                    self.start_mini = !self.start_mini;
+                    self.tray_opts.start_mini.set_checked(self.start_mini);
+                    save_config(&self.hotkey, self.start_mini);
                 }
                 "opt_resize" => {
                     self.auto_resize = !self.auto_resize;
@@ -666,21 +681,18 @@ impl eframe::App for ScantoutApp {
                 // On restaure la fenetre puis on laisse une ou deux frames s'ecouler avant de
                 // creer les overlays.
                 let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-                if !self.show_on_capture {
-                    let was_hidden = !self.main_visible || minimized;
-                    self.enter_mini(ctx);
+                let was_hidden = !self.main_visible || minimized;
+                if self.mini {
                     if was_hidden {
+                        self.enter_mini(ctx);
                         self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
-                        dbg_log("mini + pick differe");
+                        dbg_log("mini reshown + pick differe");
                     } else {
+                        self.exit_mini(ctx);
                         self.picking = true;
-                        dbg_log("picking=true (mini)");
+                        dbg_log("picking=true (exit mini)");
                     }
-                } else if self.mini {
-                    self.exit_mini(ctx);
-                    self.picking = true;
-                    dbg_log("picking=true (exit mini)");
-                } else if !self.main_visible || minimized {
+                } else if was_hidden {
                     self.main_visible = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -843,7 +855,11 @@ impl eframe::App for ScantoutApp {
             if ui.button(label).on_hover_text("Cliquer puis presser une nouvelle combinaison").clicked() {
                 self.recording = !self.recording;
                 if self.recording {
+                    let _ = self.hotkey_manager.unregister(self.hotkey);
                     self.status = "en attente d'une combinaison…".into();
+                } else {
+                    let _ = self.hotkey_manager.register(self.hotkey);
+                    self.status = "raccourci inchangé".into();
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -852,7 +868,7 @@ impl eframe::App for ScantoutApp {
         });
 
         }
-        let parent_visible = ctx.input(|i| i.viewport().visible().unwrap_or(true));
+        let parent_visible = self.main_visible && ctx.input(|i| i.viewport().visible()) != Some(false);
         if self.picking && !parent_visible {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
