@@ -67,6 +67,8 @@ impl OcrEngine {
         let engine = OAROCRBuilder::new(det_s.as_str(), rec_s.as_str(), dict_s.as_str())
             .text_detection_config(det_cfg)
             .split_line_gaps(true)
+            // Redresse les captures dont les lignes de texte sont inclinées (photo prise de travers)
+            .deskew_threshold(Some(2.5))
             .build()
             .map_err(|e| format!("init OCR: {e}"))?;
         Ok(Self { lang, engine })
