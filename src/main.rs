@@ -5,6 +5,30 @@ use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, Global
 use tray_icon::{TrayIconBuilder, Icon};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 
+fn capture_zone(zone: [i32; 4]) -> Result<image::RgbaImage, String> {
+    let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
+    if monitors.is_empty() { return Err("aucun écran détecté".into()); }
+    let [zx, zy, zw, zh] = zone;
+    // écran contenant le centre de la zone (sinon le premier)
+    let cx = zx + zw as i32 / 2;
+    let cy = zy + zh as i32 / 2;
+    let mon = monitors.iter().find(|m| {
+        let (mx, my, mw, mh) = (m.x().unwrap_or(0), m.y().unwrap_or(0), m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32);
+        cx >= mx && cy >= my && cx < mx + mw && cy < my + mh
+    }).unwrap_or(&monitors[0]);
+    let mx = mon.x().unwrap_or(0);
+    let my = mon.y().unwrap_or(0);
+    let img = mon.capture_image().map_err(|e| e.to_string())?;
+    let iw = img.width() as i32;
+    let ih = img.height() as i32;
+    let x = (zx - mx).clamp(0, iw.saturating_sub(1));
+    let y = (zy - my).clamp(0, ih.saturating_sub(1));
+    let w = (zw).min(iw - x);
+    let h = (zh).min(ih - y);
+    if w <= 0 || h <= 0 { return Err("zone hors écran".into()); }
+    Ok(image::imageops::crop_imm(&img, x as u32, y as u32, w as u32, h as u32).to_image())
+}
+
 fn main() -> eframe::Result<()> {
     let tray_menu = Menu::new();
     let item_toggle = MenuItem::with_id("toggle", "Afficher / Masquer", true, None);
@@ -45,6 +69,7 @@ fn main() -> eframe::Result<()> {
                 drag_start: None,
                 drag_now: None,
                 main_visible: true,
+                capture: None,
                 _hotkey_manager: hotkey_manager,
             }))
         }),
@@ -73,6 +98,7 @@ struct ScantoutApp {
     drag_start: Option<egui::Pos2>,
     drag_now: Option<egui::Pos2>,
     main_visible: bool,
+    capture: Option<egui::TextureHandle>,
     _hotkey_manager: GlobalHotKeyManager,
 }
 
@@ -106,7 +132,7 @@ impl eframe::App for ScantoutApp {
             ui.label(egui::RichText::new("● ScantoutPC").color(egui::Color32::from_rgb(96, 165, 250)).strong());
         }).response;
         let title_rect = title.rect.expand2(egui::vec2(8.0, 4.0));
-        let drag = ui.interact(title_rect, ui.id().with("drag-title"), egui::Sense::drag());
+        let drag = ui.interact(title_rect, ui.scope_id().with("drag-title"), egui::Sense::drag());
         if drag.drag_started() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
@@ -117,6 +143,11 @@ impl eframe::App for ScantoutApp {
                 .desired_rows(8)
                 .hint_text("Le texte capturé apparaîtra ici…"));
         });
+        if let Some(tex) = &self.capture {
+            let max_w = ui.available_width();
+            let scale = (max_w / tex.size_vec2().x).min(120.0 / tex.size_vec2().y).min(1.0);
+            ui.add(egui::Image::from_texture(tex).max_width(tex.size_vec2().x * scale));
+        }
         ui.horizontal(|ui| {
             if ui.button("Copier").clicked() {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -129,6 +160,20 @@ impl eframe::App for ScantoutApp {
             }
             if ui.button("Zone…").clicked() {
                 self.picking = true;
+            }
+            if ui.button("Capturer").clicked() {
+                match self.zone {
+                    Some(z) => match capture_zone(z) {
+                        Ok(img) => {
+                            let size = [img.width() as usize, img.height() as usize];
+                            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                            self.capture = Some(ui.ctx().load_texture("capture", color, egui::TextureOptions::LINEAR));
+                            self.status = format!("capturé {}×{}", img.width(), img.height());
+                        }
+                        Err(e) => self.status = format!("capture échouée: {e}"),
+                    },
+                    None => self.status = "définis d'abord une zone".into(),
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(&self.status).small().color(egui::Color32::GRAY));
