@@ -200,7 +200,7 @@ const NORMAL_SIZE: egui::Vec2 = egui::vec2(460.0, 360.0);
 
 impl ScantoutApp {
     fn enter_mini(&mut self, ctx: &egui::Context) {
-        dbg_log("enter_mini");
+        dbg_log(&format!("enter_mini (was mini={} main_visible={})", self.mini, self.main_visible));
         if !self.mini {
             self.prev_rect = ctx.input(|i| i.viewport().outer_rect);
         }
@@ -218,7 +218,7 @@ impl ScantoutApp {
         }
     }
     fn exit_mini(&mut self, ctx: &egui::Context) {
-        dbg_log("exit_mini");
+        dbg_log(&format!("exit_mini (mini={} main_visible={})", self.mini, self.main_visible));
         self.mini = false;
         self.mini_collapsing = None;
         self.mini_since = None;
@@ -554,21 +554,24 @@ impl ScantoutApp {
     }
 
     fn toggle_main(&mut self, ctx: &egui::Context) {
-        if self.mini {
-            self.exit_mini(ctx);
-            return;
-        }
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        dbg_log(&format!("tray toggle: mini={} main_visible={} minimized={}", self.mini, self.main_visible, minimized));
         if minimized {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.main_visible = true;
             return;
         }
-        self.main_visible = !self.main_visible;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.main_visible));
         if self.main_visible {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.main_visible = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else {
+            self.main_visible = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            if !self.mini {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
         }
     }
 }
@@ -719,6 +722,8 @@ impl eframe::App for ScantoutApp {
                 // On restaure la fenetre puis on laisse une ou deux frames s'ecouler avant de
                 // creer les overlays.
                 let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                let evis = ctx.input(|i| i.viewport().visible());
+                dbg_log(&format!("hotkey state: mini={} main_visible={} minimized={:?} egui_visible={:?}", self.mini, self.main_visible, minimized, evis));
                 let was_hidden = !self.main_visible || minimized;
                 if self.mini {
                     if was_hidden {
@@ -749,6 +754,7 @@ impl eframe::App for ScantoutApp {
         let ctx = ui.ctx().clone();
         if ui.input(|i| i.viewport().close_requested()) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            dbg_log(&format!("close requested: mini={} main_visible={}", self.mini, self.main_visible));
             if self.mini {
                 self.mini_since = None;
                 self.mini_collapsing = None;
@@ -760,6 +766,7 @@ impl eframe::App for ScantoutApp {
         }
         if self.picking && self.overlay_shots.is_none() {
             self.pending_capture = None;
+            dbg_log("spawn overlays start");
             let mut shots = Vec::new();
             if let Ok(monitors) = xcap::Monitor::all() {
                 for (i, m) in monitors.iter().enumerate() {
@@ -790,6 +797,7 @@ impl eframe::App for ScantoutApp {
             } else {
                 self.overlay_active = true;
             }
+            dbg_log(&format!("spawn overlays done: {} ecran(s)", shots.len()));
             self.overlay_shots = Some(shots);
         }
         if !self.picking && self.overlay_active {
@@ -914,6 +922,7 @@ impl eframe::App for ScantoutApp {
         }
         let parent_visible = self.main_visible && ctx.input(|i| i.viewport().visible()) != Some(false);
         if self.picking && !parent_visible {
+            dbg_log(&format!("spawn blocked: main_visible={} egui_visible={:?}", self.main_visible, ctx.input(|i| i.viewport().visible())));
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.picking && parent_visible {
