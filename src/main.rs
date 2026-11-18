@@ -41,6 +41,10 @@ fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
 }
 
 fn main() -> eframe::Result<()> {
+    std::panic::set_hook(Box::new(|info| {
+        let p = std::env::temp_dir().join("scantoutpc_panic.log");
+        let _ = std::fs::write(&p, format!("{info}\n"));
+    }));
     // pointe la DLL ONNX Runtime embarquee (build avec load-dynamic)
     if std::env::var_os("ORT_DYLIB_PATH").is_none() {
         if let Ok(exe) = std::env::current_exe() {
@@ -60,15 +64,17 @@ fn main() -> eframe::Result<()> {
     let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, true, None);
     let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
     let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, false, None);
+    let opt_showwin = CheckMenuItem::with_id("opt_showwin", "Afficher la fenêtre lors d'une capture", true, true, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_showwin, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
         light: opt_light.clone(),
+        showwin: opt_showwin.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
         ko: lang_ko.clone(),
@@ -122,6 +128,7 @@ fn main() -> eframe::Result<()> {
                 keep_history: true,
                 auto_copy: true,
                 light_mode: false,
+                show_on_capture: true,
                 hist_tex: std::collections::HashMap::new(),
                 tray_opts,
                 ocr_lang: ocr::OcrLang::Latin,
@@ -229,6 +236,7 @@ struct TrayOptions {
     latin: CheckMenuItem,
     zh: CheckMenuItem,
     ko: CheckMenuItem,
+    showwin: CheckMenuItem,
 }
 
 struct ScantoutApp {
@@ -247,6 +255,7 @@ struct ScantoutApp {
     keep_history: bool,
     auto_copy: bool,
     light_mode: bool,
+    show_on_capture: bool,
     hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
     tray_opts: TrayOptions,
     ocr_lang: ocr::OcrLang,
@@ -342,6 +351,12 @@ impl eframe::App for ScantoutApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_visuals(if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() });
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if let Some(t) = self.auto_capture_at {
+            if std::time::Instant::now() >= t {
+                self.auto_capture_at = None;
+                self.do_capture(ctx);
+            }
+        }
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().0.as_str() {
                 "toggle" => self.toggle_main(ctx),
@@ -354,6 +369,10 @@ impl eframe::App for ScantoutApp {
                 "opt_keep" => {
                     self.keep_history = !self.keep_history;
                     self.tray_opts.keep_history.set_checked(self.keep_history);
+                }
+                "opt_showwin" => {
+                    self.show_on_capture = !self.show_on_capture;
+                    self.tray_opts.showwin.set_checked(self.show_on_capture);
                 }
                 "opt_light" => {
                     self.light_mode = !self.light_mode;
@@ -380,14 +399,16 @@ impl eframe::App for ScantoutApp {
         }
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
-                let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-                if !self.main_visible || minimized {
-                    self.main_visible = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    if minimized {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                if self.show_on_capture {
+                    let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                    if !self.main_visible || minimized {
+                        self.main_visible = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        if minimized {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 self.picking = true;
             }
@@ -400,12 +421,6 @@ impl eframe::App for ScantoutApp {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.main_visible = false;
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
-        if let Some(t) = self.auto_capture_at {
-            if std::time::Instant::now() >= t {
-                self.auto_capture_at = None;
-                self.do_capture(&ctx);
-            }
         }
         if self.picking && self.overlay_shots.is_none() {
             let mut shots = Vec::new();
