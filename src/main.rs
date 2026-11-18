@@ -3,7 +3,7 @@
 use eframe::egui;
 use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, GlobalHotKeyManager};
 use tray_icon::{TrayIconBuilder, Icon};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 mod ocr;
 
 // zone en points logiques (egui) ; ppp = pixels_per_point de la fenêtre overlay
@@ -56,11 +56,26 @@ fn main() -> eframe::Result<()> {
             }
         }
     }
+    let opt_auto = CheckMenuItem::with_id("opt_auto", "Copie auto dans le presse-papier", true, true, None);
+    let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, true, None);
+    let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
+    let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
+    let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
+    let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
+    let options_sub = Submenu::with_id("options", "Options", true);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let tray_opts = TrayOptions {
+        auto_copy: opt_auto.clone(),
+        keep_history: opt_keep.clone(),
+        latin: lang_latin.clone(),
+        zh: lang_zh.clone(),
+        ko: lang_ko.clone(),
+    };
     let tray_menu = Menu::new();
     let item_toggle = MenuItem::with_id("toggle", "Afficher / Masquer", true, None);
     let item_zone = MenuItem::with_id("zone", "Definir la zone...", true, None);
     let item_quit = MenuItem::with_id("quit", "Quitter", true, None);
-    let _ = tray_menu.append_items(&[&item_toggle, &item_zone, &item_quit]);
+    let _ = tray_menu.append_items(&[&item_toggle, &item_zone, &PredefinedMenuItem::separator(), &options_sub, &PredefinedMenuItem::separator(), &item_quit]);
     let _tray = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
         .with_tooltip("ScantoutPC")
@@ -105,6 +120,7 @@ fn main() -> eframe::Result<()> {
                 keep_history: true,
                 auto_copy: true,
                 hist_tex: std::collections::HashMap::new(),
+                tray_opts,
                 ocr_lang: ocr::OcrLang::Latin,
                 ocr_engine: None,
                 _hotkey_manager: hotkey_manager,
@@ -149,6 +165,22 @@ fn history_append(dir: &std::path::Path, line: &str) {
 }
 
 
+fn clear_history_files() -> usize {
+    let mut n = 0;
+    if let Some(d) = dump_dir() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for e in rd.flatten() {
+                if let Some(name) = e.file_name().to_str().map(|x| x.to_string()) {
+                    if name.starts_with("cap_") || name.starts_with("ocr_") || name == "history.log" {
+                        if std::fs::remove_file(e.path()).is_ok() { n += 1; }
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
 fn scan_history() -> Vec<(u64, std::path::PathBuf, Option<std::path::PathBuf>)> {
     let mut v = Vec::new();
     if let Some(d) = dump_dir() {
@@ -187,6 +219,14 @@ struct OverlayShot {
     tex: egui::TextureHandle,
 }
 
+struct TrayOptions {
+    auto_copy: CheckMenuItem,
+    keep_history: CheckMenuItem,
+    latin: CheckMenuItem,
+    zh: CheckMenuItem,
+    ko: CheckMenuItem,
+}
+
 struct ScantoutApp {
     text: String,
     status: String,
@@ -203,6 +243,7 @@ struct ScantoutApp {
     keep_history: bool,
     auto_copy: bool,
     hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
+    tray_opts: TrayOptions,
     ocr_lang: ocr::OcrLang,
     ocr_engine: Option<ocr::OcrEngine>,
     _hotkey_manager: GlobalHotKeyManager,
@@ -293,6 +334,30 @@ impl eframe::App for ScantoutApp {
                 "toggle" => self.toggle_main(ctx),
                 "zone" => self.picking = true,
                 "quit" => std::process::exit(0),
+                "opt_auto" => {
+                    self.auto_copy = !self.auto_copy;
+                    self.tray_opts.auto_copy.set_checked(self.auto_copy);
+                }
+                "opt_keep" => {
+                    self.keep_history = !self.keep_history;
+                    self.tray_opts.keep_history.set_checked(self.keep_history);
+                }
+                "opt_clear" => {
+                    clear_history_files();
+                    self.hist_tex.clear();
+                    self.status = "historique effacé".into();
+                }
+                "lang_latin" | "lang_zh" | "lang_ko" => {
+                    let ev = event.id().0.clone();
+                    self.ocr_lang = match ev.as_str() {
+                        "lang_zh" => ocr::OcrLang::Chinese,
+                        "lang_ko" => ocr::OcrLang::Korean,
+                        _ => ocr::OcrLang::Latin,
+                    };
+                    self.tray_opts.latin.set_checked(ev == "lang_latin");
+                    self.tray_opts.zh.set_checked(ev == "lang_zh");
+                    self.tray_opts.ko.set_checked(ev == "lang_ko");
+                }
                 _ => {}
             }
         }
@@ -372,42 +437,11 @@ impl eframe::App for ScantoutApp {
             let scale = (max_w / tex.size_vec2().x).min(120.0 / tex.size_vec2().y).min(1.0);
             ui.add(egui::Image::from_texture(tex).max_width(tex.size_vec2().x * scale));
         }
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.auto_copy, "Copie auto dans le presse-papier");
-        });
-        ui.horizontal(|ui| {
-            ui.label("Langue OCR :");
-            egui::ComboBox::from_id_salt("ocr_lang")
-                .selected_text(self.ocr_lang.label())
-                .show_ui(ui, |ui| {
-                    for lang in ocr::OcrLang::ALL {
-                        ui.selectable_value(&mut self.ocr_lang, lang, lang.label());
-                    }
-                });
-        });
         let hist = scan_history();
         egui::CollapsingHeader::new(format!("Historique ({} capture{})", hist.len(), if hist.len() > 1 { "s" } else { "" }))
             .id_salt("historique")
             .default_open(false)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.keep_history, "Conserver les captures");
-                    if ui.button("Effacer tout").clicked() {
-                        if let Some(d) = dump_dir() {
-                            if let Ok(rd) = std::fs::read_dir(&d) {
-                                for e in rd.flatten() {
-                                    if let Some(name) = e.file_name().to_str().map(|x| x.to_string()) {
-                                        if name.starts_with("cap_") || name.starts_with("ocr_") || name == "history.log" {
-                                            let _ = std::fs::remove_file(e.path());
-                                        }
-                                    }
-                                }
-                            }
-                            self.hist_tex.clear();
-                            self.status = "historique effacé".into();
-                        }
-                    }
-                });
                 egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                     for (ts, png, txt) in &hist {
                         ui.horizontal(|ui| {
