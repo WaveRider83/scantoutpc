@@ -700,6 +700,10 @@ impl ScantoutApp {
 }
 
 impl eframe::App for ScantoutApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.window_fill().to_normalized_gamma_f32()
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_visuals(if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() });
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
