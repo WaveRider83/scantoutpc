@@ -131,7 +131,7 @@ impl ScantoutApp {
 
 impl eframe::App for ScantoutApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().0.as_str() {
                 "toggle" => self.toggle_main(ctx),
@@ -295,7 +295,6 @@ impl eframe::App for ScantoutApp {
                         *drag_now = None;
                         *drag_screen = None;
                     }
-                    ui.ctx().request_repaint();
                 });
             }
         }
