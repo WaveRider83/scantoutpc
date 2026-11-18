@@ -6,34 +6,31 @@ use tray_icon::{TrayIconBuilder, Icon};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 
 // zone en points logiques (egui) ; ppp = pixels_per_point de la fenêtre overlay
-fn capture_zone(zone: [i32; 4], ppp: f32) -> Result<image::RgbaImage, String> {
+#[derive(Clone)]
+struct PickedZone {
+    monitor: String,
+    x: i32, y: i32, w: i32, h: i32, // points logiques relatifs à l'écran
+    ppp: f32,
+}
+
+fn monitor_key(m: &xcap::Monitor) -> String {
+    m.name().unwrap_or_else(|_| "?".into())
+}
+
+fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
-    if monitors.is_empty() { return Err("aucun écran détecté".into()); }
-    // conversion en pixels physiques
-    let zx = (zone[0] as f32 * ppp).round() as i32;
-    let zy = (zone[1] as f32 * ppp).round() as i32;
-    let zw = (zone[2] as f32 * ppp).round().max(1.0) as i32;
-    let zh = (zone[3] as f32 * ppp).round().max(1.0) as i32;
-    let cx = zx + zw / 2;
-    let cy = zy + zh / 2;
-    let phys = |m: &xcap::Monitor| -> (i32, i32, i32, i32) {
-        let mx = m.x().unwrap_or(0);
-        let my = m.y().unwrap_or(0);
-        let s = m.scale_factor().unwrap_or(1.0);
-        // les positions xcap sont déjà en pixels physiques, la taille aussi
-        let _ = s;
-        (mx, my, m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32)
-    };
-    let mon = monitors.iter().find(|m| {
-        let (mx, my, mw, mh) = phys(m);
-        cx >= mx && cy >= my && cx < mx + mw && cy < my + mh
-    }).unwrap_or(&monitors[0]);
-    let (mx, my, _mw, _mh) = phys(mon);
+    let mon = monitors.iter().find(|m| monitor_key(m) == sel.monitor)
+        .ok_or_else(|| format!("écran '{}' introuvable", sel.monitor))?;
+    let p = sel.ppp;
+    let zx = (sel.x as f32 * p).round() as i32;
+    let zy = (sel.y as f32 * p).round() as i32;
+    let zw = ((sel.w as f32) * p).round().max(1.0) as i32;
+    let zh = ((sel.h as f32) * p).round().max(1.0) as i32;
     let img = mon.capture_image().map_err(|e| e.to_string())?;
     let iw = img.width() as i32;
     let ih = img.height() as i32;
-    let x = (zx - mx).clamp(0, iw.saturating_sub(1));
-    let y = (zy - my).clamp(0, ih.saturating_sub(1));
+    let x = zx.clamp(0, iw.saturating_sub(1));
+    let y = zy.clamp(0, ih.saturating_sub(1));
     let w = zw.min(iw - x);
     let h = zh.min(ih - y);
     if w <= 0 || h <= 0 { return Err("zone hors écran".into()); }
@@ -76,10 +73,10 @@ fn main() -> eframe::Result<()> {
                 text: String::new(),
                 status: "capture inactive".into(),
                 zone: None,
-                zone_ppp: 1.0,
                 picking: false,
                 drag_start: None,
                 drag_now: None,
+                drag_screen: None,
                 main_visible: true,
                 capture: None,
                 _hotkey_manager: hotkey_manager,
@@ -105,11 +102,11 @@ fn make_icon() -> Icon {
 struct ScantoutApp {
     text: String,
     status: String,
-    zone: Option<[i32; 4]>,
-    zone_ppp: f32,
+    zone: Option<PickedZone>,
     picking: bool,
     drag_start: Option<egui::Pos2>,
     drag_now: Option<egui::Pos2>,
+    drag_screen: Option<usize>,
     main_visible: bool,
     capture: Option<egui::TextureHandle>,
     _hotkey_manager: GlobalHotKeyManager,
@@ -135,7 +132,7 @@ impl eframe::App for ScantoutApp {
         }
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
-                self.toggle_main(ctx);
+                self.picking = true;
             }
         }
     }
@@ -177,9 +174,8 @@ impl eframe::App for ScantoutApp {
                 self.picking = true;
             }
             if ui.button("Capturer").clicked() {
-                let ppp = self.zone_ppp;
-                match self.zone {
-                    Some(z) => match capture_zone(z, ppp) {
+                match self.zone.clone() {
+                    Some(z) => match capture_zone(&z) {
                         Ok(img) => {
                             let size = [img.width() as usize, img.height() as usize];
                             let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
@@ -197,68 +193,87 @@ impl eframe::App for ScantoutApp {
         });
 
         if self.picking {
-            let builder = egui::ViewportBuilder::default()
-                .with_title("zone")
-                .with_fullscreen(true)
-                .with_decorations(false)
-                .with_transparent(true)
-                .with_always_on_top()
-                .with_taskbar(false);
-            let drag_start = &mut self.drag_start;
-            let drag_now = &mut self.drag_now;
-            let picking = &mut self.picking;
-            let zone = &mut self.zone;
-            let status = &mut self.status;
-            let zone_ppp = &mut self.zone_ppp;
-            let ctx_ppp = ui.ctx().pixels_per_point();
-            ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("zone-overlay"), builder, |ui, _class| {
-                let screen = ui.max_rect();
-                let painter = ui.painter();
-                painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
-                painter.text(
-                    egui::Pos2::new(screen.center().x, 24.0),
-                    egui::Align2::CENTER_TOP,
-                    "Glissez pour définir la zone — Échap pour annuler",
-                    egui::FontId::proportional(15.0),
-                    egui::Color32::WHITE,
-                );
-                if let (Some(s), Some(n)) = (*drag_start, *drag_now) {
-                    let rect = egui::Rect::from_two_pos(s, n);
-                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(59, 130, 246, 40));
-                    painter.rect_stroke(rect, 0.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(59, 130, 246)), egui::StrokeKind::Inside);
-                }
-                let input = ui.input(|i| i.clone());
-                if input.key_pressed(egui::Key::Escape) {
-                    *picking = false;
-                    *drag_start = None;
-                    *drag_now = None;
-                    return;
-                }
-                if input.pointer.button_pressed(egui::PointerButton::Primary) {
-                    *drag_start = input.pointer.latest_pos();
-                    *drag_now = *drag_start;
-                }
-                if input.pointer.button_down(egui::PointerButton::Primary) {
-                    if let Some(p) = input.pointer.latest_pos() {
-                        *drag_now = Some(p);
+            let monitors = xcap::Monitor::all().unwrap_or_default();
+            let mon_infos: Vec<(String, f32, i32, i32, u32, u32)> = monitors.iter().map(|m| {
+                (m.name().unwrap_or_else(|_| "?".into()),
+                 m.scale_factor().unwrap_or(1.0),
+                 m.x().unwrap_or(0), m.y().unwrap_or(0),
+                 m.width().unwrap_or(0), m.height().unwrap_or(0))
+            }).collect();
+            for (idx, (name, scale, mx, my, mw, mh)) in mon_infos.iter().enumerate() {
+                let lw = (*mw as f32) / scale;
+                let lh = (*mh as f32) / scale;
+                let lx = (*mx as f32) / scale;
+                let ly = (*my as f32) / scale;
+                let builder = egui::ViewportBuilder::default()
+                    .with_title("zone")
+                    .with_inner_size([lw, lh])
+                    .with_position([lx, ly])
+                    .with_decorations(false)
+                    .with_transparent(true)
+                    .with_always_on_top()
+                    .with_taskbar(false)
+                    .with_resizable(false);
+                let drag_start = &mut self.drag_start;
+                let drag_now = &mut self.drag_now;
+                let drag_screen = &mut self.drag_screen;
+                let picking = &mut self.picking;
+                let zone = &mut self.zone;
+                let status = &mut self.status;
+                let name = name.clone();
+                ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("zone-overlay", idx)), builder, |ui, _class| {
+                    let screen = ui.max_rect();
+                    let painter = ui.painter();
+                    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(120));
+                    painter.text(
+                        egui::Pos2::new(screen.center().x, 24.0),
+                        egui::Align2::CENTER_TOP,
+                        "Glissez pour définir la zone — Échap pour annuler",
+                        egui::FontId::proportional(15.0),
+                        egui::Color32::WHITE,
+                    );
+                    if *drag_screen == Some(idx) {
+                    if let (Some(s), Some(n)) = (*drag_start, *drag_now) {
+                        let rect = egui::Rect::from_two_pos(s, n);
+                        painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(59, 130, 246, 40));
+                        painter.rect_stroke(rect, 0.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(59, 130, 246)), egui::StrokeKind::Inside);
                     }
-                }
-                if input.pointer.button_released(egui::PointerButton::Primary) {
-                    if let (Some(s), Some(e)) = (*drag_start, *drag_now) {
-                        let (x0, x1) = (s.x.min(e.x).round() as i32, s.x.max(e.x).round() as i32);
-                        let (y0, y1) = (s.y.min(e.y).round() as i32, s.y.max(e.y).round() as i32);
-                        if x1 - x0 >= 20 && y1 - y0 >= 20 {
-                            *zone = Some([x0, y0, x1 - x0, y1 - y0]);
-                            *zone_ppp = ctx_ppp;
-                            *status = format!("zone : {}×{} @ {},{}", x1 - x0, y1 - y0, x0, y0);
+                    }
+                    let ppp = ui.ctx().pixels_per_point();
+                    let input = ui.input(|i| i.clone());
+                    if input.key_pressed(egui::Key::Escape) {
+                        *picking = false;
+                        *drag_start = None;
+                        *drag_now = None;
+                        *drag_screen = None;
+                        return;
+                    }
+                    if input.pointer.button_pressed(egui::PointerButton::Primary) {
+                        *drag_start = input.pointer.latest_pos();
+                        *drag_now = *drag_start;
+                    }
+                    if input.pointer.button_down(egui::PointerButton::Primary) {
+                        if let Some(p) = input.pointer.latest_pos() {
+                            *drag_now = Some(p);
                         }
                     }
-                    *picking = false;
-                    *drag_start = None;
-                    *drag_now = None;
-                }
-                ui.ctx().request_repaint();
-            });
+                    if input.pointer.button_released(egui::PointerButton::Primary) {
+                        if let (Some(s), Some(e)) = (*drag_start, *drag_now) {
+                            let (x0, x1) = (s.x.min(e.x).round() as i32, s.x.max(e.x).round() as i32);
+                            let (y0, y1) = (s.y.min(e.y).round() as i32, s.y.max(e.y).round() as i32);
+                            if x1 - x0 >= 20 && y1 - y0 >= 20 {
+                                *zone = Some(PickedZone { monitor: name.clone(), x: x0, y: y0, w: x1 - x0, h: y1 - y0, ppp });
+                                *status = format!("zone : {}×{} @ écran {:?}", x1 - x0, y1 - y0, name);
+                            }
+                        }
+                        *picking = false;
+                        *drag_start = None;
+                        *drag_now = None;
+                    }
+                    *drag_screen = None;
+                    ui.ctx().request_repaint();
+                });
+            }
         }
     }
 }
