@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rxing = { version = "0.9", default-features = false, features = ["decoders", "multi_barcode_readers", "qrcode", "datamatrix", "oned", "pdf417", "aztec", "encoding_rs"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 arboard = "3.7.0"
 eframe = "0.37.0"

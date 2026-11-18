@@ -4,6 +4,7 @@ use eframe::egui;
 use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, GlobalHotKeyManager};
 use tray_icon::{TrayIconBuilder, Icon};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+mod barcode;
 mod ocr;
 
 // zone en points logiques (egui) ; ppp = pixels_per_point de la fenêtre overlay
@@ -71,11 +72,12 @@ fn main() -> eframe::Result<()> {
     let opt_autostart = CheckMenuItem::with_id("opt_autostart", "Démarrer avec Windows", true, autostart_enabled(), None);
     let opt_start_mini = CheckMenuItem::with_id("opt_start_mini", "Réduire au lancement", true, cfg.start_mini, None);
     let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, cfg.auto_resize, None);
+    let opt_barcode = CheckMenuItem::with_id("opt_barcode", "Décoder les codes-barres (QR, DataMatrix…)", true, cfg.decode_barcodes, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, cfg.ocr_lang == "latin", None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, cfg.ocr_lang == "zh", None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, cfg.ocr_lang == "ko", None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
@@ -83,6 +85,7 @@ fn main() -> eframe::Result<()> {
         start_mini: opt_start_mini.clone(),
         autostart: opt_autostart.clone(),
         resize: opt_resize.clone(),
+        barcode: opt_barcode.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
         ko: lang_ko.clone(),
@@ -143,6 +146,7 @@ fn main() -> eframe::Result<()> {
                 start_mini: cfg.start_mini,
                 start_mini_pending: cfg.start_mini,
                 auto_resize: cfg.auto_resize,
+                decode_barcodes: cfg.decode_barcodes,
                 mini: false,
                 mini_since: None,
                 mini_collapsing: None,
@@ -343,6 +347,7 @@ struct AppConfig {
     light_mode: bool,
     auto_resize: bool,
     ocr_lang: String,
+    decode_barcodes: bool,
 }
 
 fn ocr_lang_from_key(v: &str) -> ocr::OcrLang {
@@ -374,6 +379,7 @@ fn load_config() -> AppConfig {
         light_mode: false,
         auto_resize: false,
         ocr_lang: "latin".to_string(),
+        decode_barcodes: true,
     };
     // config.ini a cote de l'exe ; migration douce depuis l'ancien %APPDATA% si absent
     let raw = std::fs::read_to_string(config_path()).ok().or_else(|| legacy_config_path().and_then(|p| std::fs::read_to_string(p).ok()));
@@ -391,6 +397,7 @@ fn load_config() -> AppConfig {
                 "keep_history" => cfg.keep_history = parse_bool(v),
                 "light_mode" => cfg.light_mode = parse_bool(v),
                 "auto_resize" => cfg.auto_resize = parse_bool(v),
+                "decode_barcodes" => cfg.decode_barcodes = parse_bool(v),
                 "ocr_lang" => { if matches!(v, "latin" | "zh" | "ko") { cfg.ocr_lang = v.to_string(); } }
                 _ => {}
             }
@@ -401,14 +408,15 @@ fn load_config() -> AppConfig {
 
 fn save_config(cfg: &AppConfig) {
     let body = format!(
-        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\n",
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\n",
         cfg.hotkey,
         cfg.start_mini as u8,
         cfg.auto_copy as u8,
         cfg.keep_history as u8,
         cfg.light_mode as u8,
         cfg.auto_resize as u8,
-        cfg.ocr_lang
+        cfg.ocr_lang,
+        cfg.decode_barcodes as u8
     );
     let _ = std::fs::write(config_path(), body);
 }
@@ -492,6 +500,7 @@ struct TrayOptions {
     start_mini: CheckMenuItem,
     resize: CheckMenuItem,
     autostart: CheckMenuItem,
+    barcode: CheckMenuItem,
 }
 
 struct ScantoutApp {
@@ -515,6 +524,7 @@ struct ScantoutApp {
     start_mini: bool,
     start_mini_pending: bool,
     auto_resize: bool,
+    decode_barcodes: bool,
     mini: bool,
     mini_since: Option<std::time::Instant>,
     mini_collapsing: Option<std::time::Instant>,
@@ -559,6 +569,14 @@ impl ScantoutApp {
                         dbg_log(&format!("auto-resize {w}x{h}"));
                     }
                     let dynimg = image::DynamicImage::ImageRgba8(img);
+                    let barcode_hit = if self.decode_barcodes {
+                        barcode::decode(&dynimg)
+                    } else {
+                        None
+                    };
+                    if let Some((fmt, code)) = &barcode_hit {
+                        dbg_log(&format!("barcode detecte: {fmt} :: {}", &code.chars().take(80).collect::<String>()));
+                    }
                     self.status = "ocr…".into();
                     let lang = self.ocr_lang;
                     let need_reload = self.ocr_engine.as_ref().map(|e| e.lang() != lang).unwrap_or(true);
@@ -572,31 +590,67 @@ impl ScantoutApp {
                     if let Some(engine) = &self.ocr_engine {
                         match engine.recognize(&dynimg) {
                             Ok(text) => {
+                                let text = text.trim().to_string();
+                                let composed = match &barcode_hit {
+                                    Some((fmt, code)) => {
+                                        let line = format!("[{}] {}", fmt, code);
+                                        if text.is_empty() { line } else { format!("{}\n{}", line, text) }
+                                    }
+                                    None => text,
+                                };
                                 // DEBUG TEMP : texte OCR a cote des dumps
                                 if self.keep_history {
                                     if let Some(d) = dump_dir() {
                                         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                                        let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &text);
-                                        let preview: String = text.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
-                                        history_append(&d, &format!("{ts} ocr chars={} :: {}", text.len(), preview));
+                                        let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &composed);
+                                        let preview: String = composed.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
+                                        history_append(&d, &format!("{ts} ocr chars={} :: {}", composed.chars().count(), preview));
+                                        if let Some((fmt, code)) = &barcode_hit {
+                                            history_append(&d, &format!("{ts} barcode {fmt} :: {}", code.chars().take(120).collect::<String>()));
+                                        }
                                     }
                                 }
-                                let text = text.trim().to_string();
-                                if text.is_empty() {
+                                if composed.is_empty() {
                                     self.status = "aucun texte détecté".into();
                                 } else {
-                                    self.text = text.clone();
+                                    self.text = composed.clone();
                                     if self.auto_copy {
                                         if let Ok(mut cb) = arboard::Clipboard::new() {
-                                            let _ = cb.set_text(text);
+                                            let _ = cb.set_text(composed);
                                         }
-                                        self.status = "texte copié ✓".into();
+                                        self.status = match &barcode_hit {
+                                            Some((fmt, _)) => format!("{} détecté, copié ✓", fmt),
+                                            None => "texte copié ✓".into(),
+                                        };
                                     } else {
-                                        self.status = "texte reconnu".into();
+                                        self.status = match &barcode_hit {
+                                            Some((fmt, _)) => format!("{} détecté", fmt),
+                                            None => "texte reconnu".into(),
+                                        };
                                     }
                                 }
                             }
-                            Err(e) => self.status = e,
+                            Err(e) => {
+                                if let Some((fmt, code)) = &barcode_hit {
+                                    let composed = format!("[{}] {}", fmt, code);
+                                    self.text = composed.clone();
+                                    if self.auto_copy {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            let _ = cb.set_text(composed.clone());
+                                        }
+                                    }
+                                    if self.keep_history {
+                                        if let Some(d) = dump_dir() {
+                                            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                                            let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &composed);
+                                            history_append(&d, &format!("{ts} barcode {fmt} :: {}", code.chars().take(120).collect::<String>()));
+                                        }
+                                    }
+                                    self.status = format!("{} détecté (OCR a échoué)", fmt);
+                                } else {
+                                    self.status = e;
+                                }
+                            }
                         }
                     }
                 }
@@ -617,6 +671,7 @@ impl ScantoutApp {
             keep_history: self.keep_history,
             light_mode: self.light_mode,
             auto_resize: self.auto_resize,
+            decode_barcodes: self.decode_barcodes,
             ocr_lang: ocr_lang_key(&self.ocr_lang).to_string(),
         });
     }
@@ -759,6 +814,11 @@ impl eframe::App for ScantoutApp {
                 "opt_resize" => {
                     self.auto_resize = !self.auto_resize;
                     self.tray_opts.resize.set_checked(self.auto_resize);
+                    self.save_cfg();
+                }
+                "opt_barcode" => {
+                    self.decode_barcodes = !self.decode_barcodes;
+                    self.tray_opts.barcode.set_checked(self.decode_barcodes);
                     self.save_cfg();
                 }
                 "opt_light" => {
