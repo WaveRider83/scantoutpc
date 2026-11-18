@@ -9,7 +9,7 @@ OCR live sur Windows 10/11 : zone fixe définie par l'utilisateur, survol → te
 - Traduction intégrée, 100 % hors-ligne
 
 ## Stack retenue (2026-11-18)
-- **App** : Rust (windows-rs), Windows 10/11
+- **App** : Tauri (Rust + WebView2), frontend Vanilla TS + CSS ; tray/overlay en windows-rs. Cibles Windows 10/11
 - **OCR** : PP-OCR (PaddleOCR) via ONNX Runtime (`ort`), local — bon en zh/ko, aucune dépendance aux packs linguistiques Windows
 - **Traduction** : Argos Translate, hors-ligne (fr/en/zh/ko) — tourne en sidecar Python embarqué (pas de binding Rust natif)
 - Packaging : à définir (MSI/MSIX ou exe portable)

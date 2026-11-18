@@ -22,6 +22,7 @@ Hors MVP : historique persistant, multi-zones, cloud, reconnaissance manuscrite.
 - Config utilisateur : `%APPDATA%/ScantoutPC/config.toml` (zone, raccourci, langues, intervalles).
 
 ## Points ouverts
-- Packaging (MSI/MSIX vs exe portable) et embarquement du sidecar Python (PyInstaller ?)
+- Embarquement du sidecar Python (PyInstaller ?)
 - Intervalle live & seuil de diff à calibrer
-- UI : egui (portable, simple) vs WinUI natif — egui favorisé pour simplicité Rust
+- UI : **Tauri** (Rust + WebView2), frontend **Vanilla TS + CSS** (zéro framework) ; tray + overlay de sélection restent en windows-rs natif
+- Packaging : Tauri (MSI/NSIS) ; WebView2 présent par défaut sur Win10/11 récents, sinon bootstrapper dans l'installeur
