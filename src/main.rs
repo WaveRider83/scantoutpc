@@ -100,10 +100,15 @@ impl eframe::App for ScantoutApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
+        let title = ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.label(egui::RichText::new("● ScantoutPC").color(egui::Color32::from_rgb(96, 165, 250)).strong());
-        });
+        }).response;
+        let title_rect = title.rect.expand2(egui::vec2(8.0, 4.0));
+        let drag = ui.interact(title_rect, ui.id().with("drag-title"), egui::Sense::drag());
+        if drag.drag_started() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
         ui.add_space(4.0);
         egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
             ui.add(egui::TextEdit::multiline(&mut self.text)
