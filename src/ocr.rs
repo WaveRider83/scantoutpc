@@ -1,5 +1,6 @@
 use image::DynamicImage;
 use oar_ocr::oarocr::OAROCRBuilder;
+use oar_ocr::domain::tasks::text_detection::TextDetectionConfig;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -55,7 +56,13 @@ impl OcrEngine {
         if !det.exists() || !dir.join(rec).exists() || !dir.join(dict).exists() {
             return Err(format!("modèles manquants dans {}", dir.display()));
         }
+        let det_cfg = TextDetectionConfig {
+            score_threshold: 0.2,
+            box_threshold: 0.45,
+            ..Default::default()
+        };
         let engine = OAROCRBuilder::new(det_s.as_str(), rec_s.as_str(), dict_s.as_str())
+            .text_detection_config(det_cfg)
             .build()
             .map_err(|e| format!("init OCR: {e}"))?;
         Ok(Self { lang, engine })
@@ -69,8 +76,8 @@ impl OcrEngine {
         // Upscale des petites captures : le modele rec lit mieux les lignes >= ~40 px de haut
         let mut rgb = image.to_rgb8();
         let h = rgb.height();
-        if h < 120 {
-            let scale = (120.0 / h as f32).clamp(1.0, 4.0);
+        if h < 160 {
+            let scale = (160.0 / h as f32).clamp(1.0, 6.0);
             let (nw, nh) = ((rgb.width() as f32 * scale) as u32, (rgb.height() as f32 * scale) as u32);
             rgb = image::imageops::resize(&rgb, nw, nh, image::imageops::FilterType::Lanczos3);
         }
