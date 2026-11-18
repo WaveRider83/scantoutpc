@@ -625,7 +625,7 @@ impl eframe::App for ScantoutApp {
             }
         }
         // Mini : disparition apres 3 s (animation de recollement)
-        if self.mini && !self.picking && self.mini_collapsing.is_none() {
+        if self.mini && !self.picking && self.auto_capture_at.is_none() && self.mini_collapsing.is_none() {
             if let Some(t0) = self.mini_since {
                 if t0.elapsed() >= std::time::Duration::from_secs(3) {
                     self.mini_collapsing = Some(std::time::Instant::now());
