@@ -66,18 +66,20 @@ fn main() -> eframe::Result<()> {
     let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, true, None);
     let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
     let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, false, None);
+    let opt_autostart = CheckMenuItem::with_id("opt_autostart", "Démarrer avec Windows", true, autostart_enabled(), None);
     let opt_start_mini = CheckMenuItem::with_id("opt_start_mini", "Réduire au lancement", true, start_mini, None);
     let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, false, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_start_mini, &opt_resize, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
         light: opt_light.clone(),
         start_mini: opt_start_mini.clone(),
+        autostart: opt_autostart.clone(),
         resize: opt_resize.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
@@ -311,6 +313,30 @@ fn default_hotkey() -> HotKey {
     HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO)
 }
 
+fn autostart_enabled() -> bool {
+    std::process::Command::new("reg")
+        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "ScantoutPC"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn set_autostart(enable: bool) -> bool {
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let exe = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => return false,
+    };
+    let r = if enable {
+        std::process::Command::new("reg").args(["add", key, "/v", "ScantoutPC", "/t", "REG_SZ", "/d", &exe, "/f"]).status()
+    } else {
+        std::process::Command::new("reg").args(["delete", key, "/v", "ScantoutPC", "/f"]).status()
+    };
+    r.map(|s| s.success()).unwrap_or(false)
+}
+
 fn load_config() -> (HotKey, bool) {
     let raw = std::fs::read_to_string(config_path()).unwrap_or_default();
     let mut hk = None;
@@ -409,6 +435,7 @@ struct TrayOptions {
     ko: CheckMenuItem,
     start_mini: CheckMenuItem,
     resize: CheckMenuItem,
+    autostart: CheckMenuItem,
 }
 
 struct ScantoutApp {
@@ -643,6 +670,11 @@ impl eframe::App for ScantoutApp {
                     self.keep_history = !self.keep_history;
                     self.tray_opts.keep_history.set_checked(self.keep_history);
                 }
+                "opt_autostart" => {
+                    let want = !self.tray_opts.autostart.is_checked();
+                    let ok = set_autostart(want);
+                    self.tray_opts.autostart.set_checked(if ok { want } else { autostart_enabled() });
+                }
                 "opt_start_mini" => {
                     self.start_mini = !self.start_mini;
                     self.tray_opts.start_mini.set_checked(self.start_mini);
@@ -714,8 +746,14 @@ impl eframe::App for ScantoutApp {
         let ctx = ui.ctx().clone();
         if ui.input(|i| i.viewport().close_requested()) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.main_visible = false;
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if self.mini {
+                self.mini_since = None;
+                self.mini_collapsing = None;
+                self.main_visible = false;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                self.enter_mini(ui.ctx());
+            }
         }
         if self.picking && self.overlay_shots.is_none() {
             self.pending_capture = None;
