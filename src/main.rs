@@ -93,8 +93,11 @@ fn main() -> eframe::Result<()> {
         .expect("tray icon");
 
     let hotkey_manager = GlobalHotKeyManager::new().expect("hotkey manager");
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
-    hotkey_manager.register(hotkey).expect("register Ctrl+Shift+O");
+    let hotkey = load_hotkey();
+    if let Err(e) = hotkey_manager.register(hotkey) {
+        eprintln!("hotkey register failed: {e:?}; fallback Ctrl+Shift+O");
+        let _ = hotkey_manager.register(default_hotkey());
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -136,7 +139,10 @@ fn main() -> eframe::Result<()> {
                 tray_opts,
                 ocr_lang: ocr::OcrLang::Latin,
                 ocr_engine: None,
-                _hotkey_manager: hotkey_manager,
+                hotkey_label: hotkey_label(&hotkey),
+                hotkey,
+                hotkey_manager,
+                recording: false,
             }))
         }),
     )
@@ -184,6 +190,7 @@ const NORMAL_SIZE: egui::Vec2 = egui::vec2(460.0, 360.0);
 
 impl ScantoutApp {
     fn enter_mini(&mut self, ctx: &egui::Context) {
+        dbg_log("enter_mini");
         self.mini = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
         if let Some(ms) = ctx.input(|i| i.viewport().monitor_size) {
@@ -194,6 +201,7 @@ impl ScantoutApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     }
     fn exit_mini(&mut self, ctx: &egui::Context) {
+        dbg_log("exit_mini");
         self.mini = false;
         self.main_visible = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -254,6 +262,90 @@ fn dbg_log(msg: &str) {
     }
 }
 
+fn exe_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
+}
+
+fn config_path() -> std::path::PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let d = std::path::PathBuf::from(appdata).join("ScantoutPC");
+        let _ = std::fs::create_dir_all(&d);
+        d.join("config.txt")
+    } else if let Some(d) = exe_dir() {
+        d.join("scantoutpc_hotkey.txt")
+    } else {
+        std::path::PathBuf::from("scantoutpc_hotkey.txt")
+    }
+}
+
+fn default_hotkey() -> HotKey {
+    HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO)
+}
+
+fn load_hotkey() -> HotKey {
+    std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|s| s.trim().parse::<HotKey>().ok())
+        .unwrap_or_else(default_hotkey)
+}
+
+fn save_hotkey(hk: &HotKey) {
+    let _ = std::fs::write(config_path(), hk.to_string());
+}
+
+fn egui_mods(m: &egui::Modifiers) -> Modifiers {
+    let mut mods = Modifiers::empty();
+    if m.ctrl || m.command { mods |= Modifiers::CONTROL; }
+    if m.shift { mods |= Modifiers::SHIFT; }
+    if m.alt { mods |= Modifiers::ALT; }
+    mods
+}
+
+fn egui_key_to_code(k: egui::Key) -> Option<Code> {
+    use egui::Key as K;
+    Some(match k {
+        K::A => Code::KeyA, K::B => Code::KeyB, K::C => Code::KeyC, K::D => Code::KeyD,
+        K::E => Code::KeyE, K::F => Code::KeyF, K::G => Code::KeyG, K::H => Code::KeyH,
+        K::I => Code::KeyI, K::J => Code::KeyJ, K::K => Code::KeyK, K::L => Code::KeyL,
+        K::M => Code::KeyM, K::N => Code::KeyN, K::O => Code::KeyO, K::P => Code::KeyP,
+        K::Q => Code::KeyQ, K::R => Code::KeyR, K::S => Code::KeyS, K::T => Code::KeyT,
+        K::U => Code::KeyU, K::V => Code::KeyV, K::W => Code::KeyW, K::X => Code::KeyX,
+        K::Y => Code::KeyY, K::Z => Code::KeyZ,
+        K::Num0 => Code::Digit0, K::Num1 => Code::Digit1, K::Num2 => Code::Digit2,
+        K::Num3 => Code::Digit3, K::Num4 => Code::Digit4, K::Num5 => Code::Digit5,
+        K::Num6 => Code::Digit6, K::Num7 => Code::Digit7, K::Num8 => Code::Digit8, K::Num9 => Code::Digit9,
+        K::F1 => Code::F1, K::F2 => Code::F2, K::F3 => Code::F3, K::F4 => Code::F4,
+        K::F5 => Code::F5, K::F6 => Code::F6, K::F7 => Code::F7, K::F8 => Code::F8,
+        K::F9 => Code::F9, K::F10 => Code::F10, K::F11 => Code::F11, K::F12 => Code::F12,
+        K::Space => Code::Space, K::Enter => Code::Enter, K::Tab => Code::Tab,
+        K::Escape => Code::Escape, K::Backspace => Code::Backspace,
+        K::Delete => Code::Delete, K::Insert => Code::Insert,
+        K::ArrowUp => Code::ArrowUp, K::ArrowDown => Code::ArrowDown,
+        K::ArrowLeft => Code::ArrowLeft, K::ArrowRight => Code::ArrowRight,
+        K::Home => Code::Home, K::End => Code::End, K::PageUp => Code::PageUp, K::PageDown => Code::PageDown,
+        K::Minus => Code::Minus, K::Equals => Code::Equal, K::Semicolon => Code::Semicolon,
+        K::Comma => Code::Comma, K::Period => Code::Period, K::Slash => Code::Slash,
+        K::Backslash => Code::Backslash, K::OpenBracket => Code::BracketLeft,
+        K::CloseBracket => Code::BracketRight, K::Backtick => Code::Backquote, K::Quote => Code::Quote,
+        _ => return None,
+    })
+}
+
+fn hotkey_label(hk: &HotKey) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if hk.mods.contains(Modifiers::CONTROL) { parts.push("Ctrl".into()); }
+    if hk.mods.contains(Modifiers::ALT) { parts.push("Alt".into()); }
+    if hk.mods.contains(Modifiers::SHIFT) { parts.push("Maj".into()); }
+    if hk.mods.contains(Modifiers::SUPER) || hk.mods.contains(Modifiers::META) { parts.push("Win".into()); }
+    let dbg = format!("{:?}", hk.key);
+    let key = dbg.strip_prefix("Key").map(String::from)
+        .or_else(|| dbg.strip_prefix("Digit").map(String::from))
+        .unwrap_or(dbg);
+    parts.push(key);
+    parts.join("+")
+}
+
+
 fn make_icon() -> Icon {
     let (rgba, w, h) = icon_rgba();
     Icon::from_rgba(rgba, w, h).expect("icon")
@@ -300,7 +392,10 @@ struct ScantoutApp {
     tray_opts: TrayOptions,
     ocr_lang: ocr::OcrLang,
     ocr_engine: Option<ocr::OcrEngine>,
-    _hotkey_manager: GlobalHotKeyManager,
+    hotkey_manager: GlobalHotKeyManager,
+    hotkey: HotKey,
+    hotkey_label: String,
+    recording: bool,
 }
 
 impl ScantoutApp {
@@ -400,6 +495,45 @@ impl eframe::App for ScantoutApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_visuals(if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() });
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if self.recording {
+            let events = ctx.input(|i| i.events.clone());
+            for ev in events {
+                if let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = ev {
+                    if key == egui::Key::Escape {
+                        self.recording = false;
+                        self.status = "raccourci inchang\u{e9}".into();
+                        break;
+                    }
+                    match egui_key_to_code(key) {
+                        Some(code) => {
+                            let mods = egui_mods(&modifiers);
+                            if mods.is_empty() {
+                                self.status = "ajoute au moins Ctrl, Alt ou Maj".into();
+                                continue;
+                            }
+                            let new_hk = HotKey::new(Some(mods), code);
+                            let _ = self.hotkey_manager.unregister(self.hotkey);
+                            match self.hotkey_manager.register(new_hk) {
+                                Ok(()) => {
+                                    self.hotkey = new_hk;
+                                    self.hotkey_label = hotkey_label(&new_hk);
+                                    save_hotkey(&new_hk);
+                                    self.status = format!("raccourci : {}", self.hotkey_label);
+                                    dbg_log(&format!("hotkey set {}", self.hotkey_label));
+                                }
+                                Err(e) => {
+                                    let _ = self.hotkey_manager.register(self.hotkey);
+                                    self.status = format!("raccourci refuse ({e})");
+                                }
+                            }
+                            self.recording = false;
+                        }
+                        None => { self.status = "touche non supportee".into(); }
+                    }
+                    break;
+                }
+            }
+        }
         if let Some(t) = self.auto_capture_at {
             if std::time::Instant::now() >= t {
                 self.auto_capture_at = None;
@@ -455,18 +589,25 @@ impl eframe::App for ScantoutApp {
         }
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
+                if self.recording { return; }
                 dbg_log("hotkey pressed");
                 // La selection de zone passe par des overlays egui enfants de la fenetre principale :
                 // elle DOIT etre visible, sinon egui panique ("user callback was never called").
                 // On restaure la fenetre puis on laisse une ou deux frames s'ecouler avant de
                 // creer les overlays.
                 let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-                if !self.main_visible || minimized {
+                if !self.show_on_capture {
+                    self.enter_mini(ctx);
+                    self.picking = true;
+                    dbg_log("picking=true (mini)");
+                } else if self.mini {
+                    self.exit_mini(ctx);
+                    self.picking = true;
+                    dbg_log("picking=true (exit mini)");
+                } else if !self.main_visible || minimized {
                     self.main_visible = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    if minimized {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
                     dbg_log("restore + pick differe");
@@ -549,7 +690,8 @@ impl eframe::App for ScantoutApp {
             .id_salt("historique")
             .default_open(false)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                let hist_h = ui.available_height().max(140.0);
+                egui::ScrollArea::vertical().max_height(hist_h).show(ui, |ui| {
                     for (ts, png, txt) in &hist {
                         egui::Frame::group(ui.style()).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -614,21 +756,16 @@ impl eframe::App for ScantoutApp {
                 });
             });
         ui.horizontal(|ui| {
-            if ui.button("Copier").clicked() {
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(self.text.clone());
-                    self.status = "copié ✓".into();
+            let label = if self.recording {
+                egui::RichText::new("… appuie sur la combinaison (Echap = annuler)").strong()
+            } else {
+                egui::RichText::new(format!("⌨ {}", self.hotkey_label)).strong()
+            };
+            if ui.button(label).on_hover_text("Cliquer puis presser une nouvelle combinaison").clicked() {
+                self.recording = !self.recording;
+                if self.recording {
+                    self.status = "en attente d'une combinaison…".into();
                 }
-            }
-            if ui.button("Traduire").clicked() {
-                self.status = "traduction pas encore branchée".into();
-            }
-            if ui.button("Zone…").clicked() {
-                self.picking = true;
-            }
-            if ui.button("Capturer").clicked() {
-                let ctx2 = ui.ctx().clone();
-                self.do_capture(&ctx2);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(&self.status).small().color(egui::Color32::GRAY));
