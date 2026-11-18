@@ -24,5 +24,5 @@ Hors MVP : historique persistant, multi-zones, cloud, reconnaissance manuscrite.
 ## Points ouverts
 - Embarquement du sidecar Python (PyInstaller ?)
 - Intervalle live & seuil de diff à calibrer
-- UI : **Tauri** (Rust + WebView2), frontend **Vanilla TS + CSS** (zéro framework) ; tray + overlay de sélection restent en windows-rs natif
-- Packaging : Tauri (MSI/NSIS) ; WebView2 présent par défaut sur Win10/11 récents, sinon bootstrapper dans l'installeur
+- UI : **egui/eframe** (pur Rust, binaire unique, zéro Node) — tray via `tray-icon`, global shortcut `global-hotkey`, overlay plein écran transparent en viewport egui
+- Packaging : exe simple (cargo build --release), installateur MSI plus tard si besoin
