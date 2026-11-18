@@ -42,8 +42,9 @@ fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
 
 fn main() -> eframe::Result<()> {
     std::panic::set_hook(Box::new(|info| {
-        let p = std::env::temp_dir().join("scantoutpc_panic.log");
-        let _ = std::fs::write(&p, format!("{info}\n"));
+        let msg = format!("{info}\n");
+        let _ = std::fs::write(std::env::temp_dir().join("scantoutpc_panic.log"), &msg);
+        let _ = std::fs::write(r"<local>\scantoutpc\scantoutpc_panic.log", &msg);
     }));
     // pointe la DLL ONNX Runtime embarquee (build avec load-dynamic)
     if std::env::var_os("ORT_DYLIB_PATH").is_none() {
