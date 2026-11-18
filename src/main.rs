@@ -59,14 +59,16 @@ fn main() -> eframe::Result<()> {
     let opt_auto = CheckMenuItem::with_id("opt_auto", "Copie auto dans le presse-papier", true, true, None);
     let opt_keep = CheckMenuItem::with_id("opt_keep", "Conserver l'historique des captures", true, true, None);
     let opt_clear = MenuItem::with_id("opt_clear", "Effacer l'historique", true, None);
+    let opt_light = CheckMenuItem::with_id("opt_light", "Thème clair", true, false, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, true, None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, false, None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, false, None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
+        light: opt_light.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
         ko: lang_ko.clone(),
@@ -119,6 +121,7 @@ fn main() -> eframe::Result<()> {
                 auto_capture_at: None,
                 keep_history: true,
                 auto_copy: true,
+                light_mode: false,
                 hist_tex: std::collections::HashMap::new(),
                 tray_opts,
                 ocr_lang: ocr::OcrLang::Latin,
@@ -222,6 +225,7 @@ struct OverlayShot {
 struct TrayOptions {
     auto_copy: CheckMenuItem,
     keep_history: CheckMenuItem,
+    light: CheckMenuItem,
     latin: CheckMenuItem,
     zh: CheckMenuItem,
     ko: CheckMenuItem,
@@ -242,6 +246,7 @@ struct ScantoutApp {
     auto_capture_at: Option<std::time::Instant>,
     keep_history: bool,
     auto_copy: bool,
+    light_mode: bool,
     hist_tex: std::collections::HashMap<String, egui::TextureHandle>,
     tray_opts: TrayOptions,
     ocr_lang: ocr::OcrLang,
@@ -328,6 +333,7 @@ impl ScantoutApp {
 
 impl eframe::App for ScantoutApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_visuals(if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() });
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().0.as_str() {
@@ -341,6 +347,10 @@ impl eframe::App for ScantoutApp {
                 "opt_keep" => {
                     self.keep_history = !self.keep_history;
                     self.tray_opts.keep_history.set_checked(self.keep_history);
+                }
+                "opt_light" => {
+                    self.light_mode = !self.light_mode;
+                    self.tray_opts.light.set_checked(self.light_mode);
                 }
                 "opt_clear" => {
                     clear_history_files();
@@ -444,6 +454,7 @@ impl eframe::App for ScantoutApp {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                     for (ts, png, txt) in &hist {
+                        egui::Frame::group(ui.style()).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let key = ts.to_string();
                             if !self.hist_tex.contains_key(&key) {
@@ -461,13 +472,13 @@ impl eframe::App for ScantoutApp {
                                 ui.add(egui::Image::from_texture(tex).fit_to_exact_size(egui::vec2(72.0, 46.0)));
                             }
                             ui.vertical(|ui| {
-                                ui.small(fmt_ts_local(*ts));
+                                ui.label(egui::RichText::new(fmt_ts_local(*ts)).small().weak());
                                 let preview: String = txt.as_ref()
                                     .and_then(|p| std::fs::read_to_string(p).ok())
                                     .map(|t| t.split('\n').take(2).collect::<Vec<_>>().join(" "))
                                     .unwrap_or_default();
                                 let trunc: String = preview.chars().take(90).collect();
-                                ui.label(egui::RichText::new(trunc).small());
+                                ui.label(egui::RichText::new(trunc).small().color(ui.visuals().text_color()));
                                 ui.horizontal(|ui| {
                                     if ui.button("Charger").clicked() {
                                         if let Some(p) = txt {
@@ -500,7 +511,8 @@ impl eframe::App for ScantoutApp {
                                 });
                             });
                         });
-                        ui.separator();
+                        });
+                        ui.add_space(4.0);
                     }
                 });
             });
