@@ -9,3 +9,4 @@ kanban/*.db-wal
 
 #/target
 models/
+models/

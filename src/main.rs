@@ -5,6 +5,7 @@ use global_hotkey::{hotkey::{Code, HotKey, Modifiers}, GlobalHotKeyEvent, Global
 use tray_icon::{TrayIconBuilder, Icon};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 mod barcode;
+mod gdi;
 mod ocr;
 
 // zone en points logiques (egui) ; ppp = pixels_per_point de la fenêtre overlay
@@ -19,7 +20,7 @@ fn monitor_key(m: &xcap::Monitor) -> String {
     m.name().unwrap_or_else(|_| "?".into())
 }
 
-fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
+fn capture_zone(sel: &PickedZone, hw_accel: bool) -> Result<image::RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let mon = monitors.iter().find(|m| monitor_key(m) == sel.monitor)
         .ok_or_else(|| format!("écran '{}' introuvable", sel.monitor))?;
@@ -28,15 +29,21 @@ fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
     let zy = (sel.y as f32 * p).round() as i32;
     let zw = ((sel.w as f32) * p).round().max(1.0) as i32;
     let zh = ((sel.h as f32) * p).round().max(1.0) as i32;
-    let img = mon.capture_image().map_err(|e| e.to_string())?;
-    let iw = img.width() as i32;
-    let ih = img.height() as i32;
-    let x = zx.clamp(0, iw.saturating_sub(1));
-    let y = zy.clamp(0, ih.saturating_sub(1));
-    let w = zw.min(iw - x);
-    let h = zh.min(ih - y);
+    // capture uniquement la zone demandée (évite de copier tout l'écran en mémoire)
+    let mw = mon.width().map_err(|e| e.to_string())? as i32;
+    let mh = mon.height().map_err(|e| e.to_string())? as i32;
+    let x = zx.clamp(0, mw.saturating_sub(1));
+    let y = zy.clamp(0, mh.saturating_sub(1));
+    let w = zw.min(mw - x);
+    let h = zh.min(mh - y);
     if w <= 0 || h <= 0 { return Err("zone hors écran".into()); }
-    let mut out = image::imageops::crop_imm(&img, x as u32, y as u32, w as u32, h as u32).to_image();
+    let mut out = if hw_accel {
+        mon.capture_region(x as u32, y as u32, w as u32, h as u32).map_err(|e| e.to_string())?
+    } else {
+        let ox = mon.x().map_err(|e| e.to_string())?;
+        let oy = mon.y().map_err(|e| e.to_string())?;
+        gdi::gdi_capture(ox + x, oy + y, w, h)?
+    };
     for px in out.pixels_mut() { px.0[3] = 255; }
     Ok(out)
 }
@@ -73,11 +80,13 @@ fn main() -> eframe::Result<()> {
     let opt_start_mini = CheckMenuItem::with_id("opt_start_mini", "Réduire au lancement", true, cfg.start_mini, None);
     let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, cfg.auto_resize, None);
     let opt_barcode = CheckMenuItem::with_id("opt_barcode", "Décoder les codes-barres (QR, DataMatrix…)", true, cfg.decode_barcodes, None);
+    let opt_top = CheckMenuItem::with_id("opt_top", "Toujours au premier plan", true, cfg.always_on_top, None);
+    let opt_hw = CheckMenuItem::with_id("opt_hw", "Accélération matérielle", true, cfg.hw_accel, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, cfg.ocr_lang == "latin", None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, cfg.ocr_lang == "zh", None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, cfg.ocr_lang == "ko", None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &opt_top, &opt_hw, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
@@ -86,6 +95,8 @@ fn main() -> eframe::Result<()> {
         autostart: opt_autostart.clone(),
         resize: opt_resize.clone(),
         barcode: opt_barcode.clone(),
+        top: opt_top.clone(),
+        hw: opt_hw.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
         ko: lang_ko.clone(),
@@ -114,7 +125,7 @@ fn main() -> eframe::Result<()> {
             .with_inner_size(if cfg.start_mini { [MINI_W, MINI_H] } else { [460.0, 360.0] })
             .with_min_inner_size([MINI_W, MINI_H])
             .with_decorations(true)
-            .with_always_on_top()
+            .with_always_on_top() // affiné juste après via WindowLevel si désactivé
             .with_resizable(true)
             .with_icon({ let (rgba, w, h) = icon_rgba(); egui::IconData { rgba, width: w, height: h } }),
         ..Default::default()
@@ -147,6 +158,9 @@ fn main() -> eframe::Result<()> {
                 start_mini_pending: cfg.start_mini,
                 auto_resize: cfg.auto_resize,
                 decode_barcodes: cfg.decode_barcodes,
+                always_on_top: cfg.always_on_top,
+                top_init: true,
+                hw_accel: cfg.hw_accel,
                 mini: false,
                 mini_since: None,
                 mini_collapsing: None,
@@ -159,23 +173,20 @@ fn main() -> eframe::Result<()> {
                 hotkey,
                 hotkey_manager,
                 recording: false,
+                pack_rx: None,
+                pack_pending_lang: None,
             }))
         }),
     )
 }
 
 fn icon_rgba() -> (Vec<u8>, u32, u32) {
-    let mut rgba = vec![0u8; 32 * 32 * 4];
-    for y in 0..32 {
-        for x in 0..32 {
-            let i = (y * 32 + x) * 4;
-            let border = x < 2 || y < 2 || x >= 30 || y >= 30;
-            let inner = (10..22).contains(&x) && (12..20).contains(&y);
-            let (r, g, b, a) = if inner { (255, 255, 255, 255) } else if border { (96, 165, 250, 255) } else { (37, 99, 235, 255) };
-            rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = a;
-        }
-    }
-    (rgba, 32, 32)
+    // icône générée (NitroFusion2) — assets/icon_256.png embarquée
+    let img = image::load_from_memory(include_bytes!("../assets/icon_256.png"))
+        .expect("icône embarquée illisible")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    (img.into_raw(), w, h)
 }
 
 
@@ -303,6 +314,49 @@ fn exe_dir() -> Option<std::path::PathBuf> {
     std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
 }
 
+// Packs de langue OCR téléchargeables à la demande (zh/ko trop lourds pour le zip de base).
+// Source : dossier local/réseau (file:///) ou HTTPS, surchargeable via SCANTOUT_PACK_BASE_URL.
+fn pack_base_url() -> String {
+    std::env::var("SCANTOUT_PACK_BASE_URL")
+        .unwrap_or_else(|_| "file:///<local>/scantoutpc/packs".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn pack_files(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "zh" => &["rec_chinese.onnx", "rec_chinese.dict"],
+        "ko" => &["rec_korean.onnx", "rec_korean.dict"],
+        _ => &[],
+    }
+}
+
+fn pack_installed(lang: &str) -> bool {
+    let dir = ocr::models_dir();
+    pack_files(lang).iter().all(|f| dir.join(f).exists())
+}
+
+fn download_pack(lang: &str) -> Result<String, String> {
+    let base = pack_base_url();
+    let dir = ocr::models_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("models: {e}"))?;
+    for f in pack_files(lang) {
+        let url = format!("{base}/{f}");
+        let tmp = dir.join(format!("{f}.part"));
+        let dst = dir.join(f);
+        if let Some(p) = url.strip_prefix("file:///") {
+            std::fs::copy(p, &tmp).map_err(|e| format!("copie {f}: {e}"))?;
+        } else {
+            let resp = ureq::get(&url).call().map_err(|e| format!("téléchargement {f}: {e}"))?;
+            let mut reader = resp.into_reader();
+            let mut out = std::fs::File::create(&tmp).map_err(|e| format!("{f}: {e}"))?;
+            std::io::copy(&mut reader, &mut out).map_err(|e| format!("écriture {f}: {e}"))?;
+        }
+        std::fs::rename(&tmp, &dst).map_err(|e| format!("finalisation {f}: {e}"))?;
+    }
+    Ok(format!("pack {} installé", lang))
+}
+
 fn config_path() -> std::path::PathBuf {
     exe_dir().map(|d| d.join("config.ini")).unwrap_or_else(|| std::path::PathBuf::from("config.ini"))
 }
@@ -348,6 +402,8 @@ struct AppConfig {
     auto_resize: bool,
     ocr_lang: String,
     decode_barcodes: bool,
+    always_on_top: bool,
+    hw_accel: bool,
 }
 
 fn ocr_lang_from_key(v: &str) -> ocr::OcrLang {
@@ -380,6 +436,8 @@ fn load_config() -> AppConfig {
         auto_resize: false,
         ocr_lang: "latin".to_string(),
         decode_barcodes: true,
+        always_on_top: true,
+        hw_accel: false,
     };
     // config.ini a cote de l'exe ; migration douce depuis l'ancien %APPDATA% si absent
     let raw = std::fs::read_to_string(config_path()).ok().or_else(|| legacy_config_path().and_then(|p| std::fs::read_to_string(p).ok()));
@@ -398,6 +456,8 @@ fn load_config() -> AppConfig {
                 "light_mode" => cfg.light_mode = parse_bool(v),
                 "auto_resize" => cfg.auto_resize = parse_bool(v),
                 "decode_barcodes" => cfg.decode_barcodes = parse_bool(v),
+                "always_on_top" => cfg.always_on_top = parse_bool(v),
+                "hw_accel" => cfg.hw_accel = parse_bool(v),
                 "ocr_lang" => { if matches!(v, "latin" | "zh" | "ko") { cfg.ocr_lang = v.to_string(); } }
                 _ => {}
             }
@@ -408,7 +468,7 @@ fn load_config() -> AppConfig {
 
 fn save_config(cfg: &AppConfig) {
     let body = format!(
-        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\n",
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\n",
         cfg.hotkey,
         cfg.start_mini as u8,
         cfg.auto_copy as u8,
@@ -416,7 +476,9 @@ fn save_config(cfg: &AppConfig) {
         cfg.light_mode as u8,
         cfg.auto_resize as u8,
         cfg.ocr_lang,
-        cfg.decode_barcodes as u8
+        cfg.decode_barcodes as u8,
+        cfg.always_on_top as u8,
+        cfg.hw_accel as u8
     );
     let _ = std::fs::write(config_path(), body);
 }
@@ -501,6 +563,8 @@ struct TrayOptions {
     resize: CheckMenuItem,
     autostart: CheckMenuItem,
     barcode: CheckMenuItem,
+    top: CheckMenuItem,
+    hw: CheckMenuItem,
 }
 
 struct ScantoutApp {
@@ -525,6 +589,9 @@ struct ScantoutApp {
     start_mini_pending: bool,
     auto_resize: bool,
     decode_barcodes: bool,
+    always_on_top: bool,
+    top_init: bool,
+    hw_accel: bool,
     mini: bool,
     mini_since: Option<std::time::Instant>,
     mini_collapsing: Option<std::time::Instant>,
@@ -537,13 +604,27 @@ struct ScantoutApp {
     hotkey: HotKey,
     hotkey_label: String,
     recording: bool,
+    pack_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    pack_pending_lang: Option<String>,
 }
 
 impl ScantoutApp {
+    fn set_ocr_lang(&mut self, key: &str) {
+        self.ocr_lang = match key {
+            "zh" => ocr::OcrLang::Chinese,
+            "ko" => ocr::OcrLang::Korean,
+            _ => ocr::OcrLang::Latin,
+        };
+        self.tray_opts.latin.set_checked(key == "latin");
+        self.tray_opts.zh.set_checked(key == "zh");
+        self.tray_opts.ko.set_checked(key == "ko");
+        self.save_cfg();
+    }
+
     fn do_capture(&mut self, ctx: &egui::Context) {
-        dbg_log("do_capture start");
+        dbg_log(&format!("do_capture start (hw_accel={})", self.hw_accel));
         match self.zone.clone() {
-            Some(z) => match self.pending_capture.take().map(Ok).unwrap_or_else(|| capture_zone(&z)) {
+            Some(z) => match self.pending_capture.take().map(Ok).unwrap_or_else(|| capture_zone(&z, self.hw_accel)) {
                 Ok(img) => {
                     dbg_log("capture_zone ok");
                     let dump = std::env::temp_dir().join("scantoutpc_capture.png");
@@ -672,6 +753,8 @@ impl ScantoutApp {
             light_mode: self.light_mode,
             auto_resize: self.auto_resize,
             decode_barcodes: self.decode_barcodes,
+            always_on_top: self.always_on_top,
+            hw_accel: self.hw_accel,
             ocr_lang: ocr_lang_key(&self.ocr_lang).to_string(),
         });
     }
@@ -705,8 +788,31 @@ impl eframe::App for ScantoutApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // packs de langue téléchargés en tâche de fond
+        if let Some(rx) = &self.pack_rx {
+            match rx.try_recv() {
+                Ok(Ok(msg)) => {
+                    if let Some(k) = self.pack_pending_lang.take() { self.set_ocr_lang(&k); }
+                    self.status = msg;
+                    self.pack_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.status = format!("pack échoué : {e}");
+                    self.pack_rx = None;
+                    self.pack_pending_lang = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.pack_rx = None; }
+            }
+        }
         ctx.set_visuals(if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() });
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if self.top_init {
+            self.top_init = false;
+            if !self.always_on_top {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+            }
+        }
         if self.start_mini_pending {
             self.start_mini_pending = false;
             self.enter_mini(ctx);
@@ -825,6 +931,18 @@ impl eframe::App for ScantoutApp {
                     self.tray_opts.barcode.set_checked(self.decode_barcodes);
                     self.save_cfg();
                 }
+                "opt_hw" => {
+                    self.hw_accel = !self.hw_accel;
+                    self.tray_opts.hw.set_checked(self.hw_accel);
+                    self.status = if self.hw_accel { "capture GPU (WGC) activée".into() } else { "capture GDI (CPU) — GPU au repos".into() };
+                    self.save_cfg();
+                }
+                "opt_top" => {
+                    self.always_on_top = !self.always_on_top;
+                    self.tray_opts.top.set_checked(self.always_on_top);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal }));
+                    self.save_cfg();
+                }
                 "opt_light" => {
                     self.light_mode = !self.light_mode;
                     self.tray_opts.light.set_checked(self.light_mode);
@@ -837,15 +955,19 @@ impl eframe::App for ScantoutApp {
                 }
                 "lang_latin" | "lang_zh" | "lang_ko" => {
                     let ev = event.id().0.clone();
-                    self.ocr_lang = match ev.as_str() {
-                        "lang_zh" => ocr::OcrLang::Chinese,
-                        "lang_ko" => ocr::OcrLang::Korean,
-                        _ => ocr::OcrLang::Latin,
-                    };
-                    self.tray_opts.latin.set_checked(ev == "lang_latin");
-                    self.tray_opts.zh.set_checked(ev == "lang_zh");
-                    self.tray_opts.ko.set_checked(ev == "lang_ko");
-                    self.save_cfg();
+                    let key = match ev.as_str() { "lang_zh" => "zh", "lang_ko" => "ko", _ => "latin" };
+                    if key != "latin" && !pack_installed(key) {
+                        if self.pack_rx.is_none() {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            let k = key.to_string();
+                            std::thread::spawn(move || { let _ = tx.send(download_pack(&k)); });
+                            self.pack_rx = Some(rx);
+                            self.pack_pending_lang = Some(key.to_string());
+                            self.status = format!("téléchargement du pack {}…", key);
+                        }
+                    } else {
+                        self.set_ocr_lang(key);
+                    }
                 }
                 _ => {}
             }
@@ -904,11 +1026,18 @@ impl eframe::App for ScantoutApp {
         }
         if self.picking && self.overlay_shots.is_none() {
             self.pending_capture = None;
-            dbg_log("spawn overlays start");
+            dbg_log(&format!("spawn overlays start (hw_accel={})", self.hw_accel));
             let mut shots = Vec::new();
             if let Ok(monitors) = xcap::Monitor::all() {
                 for (i, m) in monitors.iter().enumerate() {
-                    if let Ok(img) = m.capture_image() {
+                    let img = if self.hw_accel {
+                        m.capture_image().ok()
+                    } else {
+                        let mw = m.width().unwrap_or(0) as i32;
+                        let mh = m.height().unwrap_or(0) as i32;
+                        gdi::gdi_capture(m.x().unwrap_or(0), m.y().unwrap_or(0), mw, mh).ok()
+                    };
+                    if let Some(img) = img {
                         let scale = m.scale_factor().unwrap_or(1.0);
                         let w = img.width() as usize;
                         let h = img.height() as usize;
