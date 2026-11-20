@@ -120,7 +120,8 @@ fn main() -> eframe::Result<()> {
             .with_title("ScantoutPC")
             .with_inner_size(if cfg.start_mini { [MINI_W, MINI_H] } else { [460.0, 360.0] })
             .with_min_inner_size([MINI_W, MINI_H])
-            .with_decorations(true)
+            .with_decorations(!cfg.start_mini)
+            .with_transparent(true)
             .with_always_on_top() // affiné juste après via WindowLevel si désactivé
             .with_resizable(true)
             .with_icon({ let (rgba, w, h) = icon_rgba(); egui::IconData { rgba, width: w, height: h } }),
@@ -214,6 +215,7 @@ impl ScantoutApp {
         self.mini = true;
         self.mini_collapsing = None;
         self.mini_since = Some(std::time::Instant::now());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
         self.main_visible = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -230,6 +232,7 @@ impl ScantoutApp {
         self.mini_collapsing = None;
         self.mini_since = None;
         self.main_visible = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(NORMAL_SIZE));
@@ -796,7 +799,11 @@ impl eframe::App for ScantoutApp {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.pack_rx = None; }
             }
         }
-        ctx.set_visuals(if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() });
+        let mut visuals = if self.light_mode { egui::Visuals::light() } else { egui::Visuals::dark() };
+        if self.mini {
+            visuals.window_fill = egui::Color32::TRANSPARENT;
+        }
+        ctx.set_visuals(visuals);
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
         if self.top_init {
             self.top_init = false;
@@ -1094,6 +1101,12 @@ impl eframe::App for ScantoutApp {
             }
         }
         if self.mini {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(24, 26, 33))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(72, 76, 90)))
+                .corner_radius(12.0)
+                .inner_margin(6.0)
+                .show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 if let Some(tex) = &self.capture {
                     let size = tex.size_vec2();
@@ -1109,6 +1122,7 @@ impl eframe::App for ScantoutApp {
                         self.exit_mini(ui.ctx());
                     }
                 }
+            });
             });
         } else {
         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
