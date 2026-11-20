@@ -173,6 +173,8 @@ fn main() -> eframe::Result<()> {
                 pack_rx: None,
                 pack_pending_lang: None,
                 show_about: false,
+                mini_flash: false,
+                mini_icon: None,
                 update_rx: None,
                 update_info: None,
             }))
@@ -215,6 +217,7 @@ impl ScantoutApp {
             self.prev_rect = ctx.input(|i| i.viewport().outer_rect);
         }
         self.mini = true;
+        self.mini_flash = false;
         self.mini_collapsing = None;
         self.mini_since = Some(std::time::Instant::now());
         ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
@@ -231,6 +234,7 @@ impl ScantoutApp {
     fn exit_mini(&mut self, ctx: &egui::Context) {
         dbg_log(&format!("exit_mini (mini={} main_visible={})", self.mini, self.main_visible));
         self.mini = false;
+        self.mini_flash = false;
         self.mini_collapsing = None;
         self.mini_since = None;
         self.main_visible = true;
@@ -633,6 +637,8 @@ struct ScantoutApp {
     pack_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pack_pending_lang: Option<String>,
     show_about: bool,
+    mini_flash: bool,
+    mini_icon: Option<egui::TextureHandle>,
     update_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
     update_info: Option<Result<Option<String>, String>>,
 }
@@ -668,6 +674,11 @@ impl ScantoutApp {
                     let size = [img.width() as usize, img.height() as usize];
                     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                     self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
+                    let reduced = self.mini || !self.main_visible || ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                    if reduced {
+                        self.enter_mini(ctx);
+                        self.mini_flash = true;
+                    }
                     if self.auto_resize {
                         let pp = ctx.pixels_per_point();
                         let w = (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0);
@@ -1156,29 +1167,43 @@ impl eframe::App for ScantoutApp {
             }
         }
         if self.mini {
+            if self.mini_icon.is_none() {
+                let (rgba, w, h) = icon_rgba();
+                let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                self.mini_icon = Some(ui.ctx().load_texture("mini-icon", img, egui::TextureOptions::LINEAR));
+            }
+            let mut clicked = false;
             egui::Frame::new()
                 .fill(egui::Color32::from_rgb(24, 26, 33))
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(72, 76, 90)))
                 .corner_radius(12.0)
                 .inner_margin(6.0)
                 .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                if let Some(tex) = &self.capture {
-                    let size = tex.size_vec2();
-                    let scale = (224.0 / size.x).min((MINI_H - 8.0) / size.y).min(1.0);
-                    let fitted = egui::vec2((size.x * scale).max(1.0), (size.y * scale).max(1.0));
-                    let img = egui::Image::from_texture(tex).fit_to_exact_size(fitted).sense(egui::Sense::click());
-                    if ui.add(img).on_hover_text("Cliquer pour agrandir").clicked() {
-                        self.exit_mini(ui.ctx());
+                ui.vertical_centered(|ui| {
+                    if self.mini_flash {
+                        if let Some(tex) = &self.capture {
+                            let img = egui::Image::from_texture(tex)
+                                .max_width(MINI_W - 18.0)
+                                .max_height(MINI_H - 14.0)
+                                .sense(egui::Sense::click());
+                            if ui.add(img).on_hover_text("Cliquer pour agrandir").clicked() {
+                                clicked = true;
+                            }
+                        }
+                    } else if let Some(icon) = &self.mini_icon {
+                        let img = egui::Image::from_texture(icon)
+                            .fit_to_exact_size(egui::vec2(56.0, 56.0))
+                            .sense(egui::Sense::click());
+                        if ui.add(img).on_hover_text("ScantoutPC — cliquer pour ouvrir").clicked() {
+                            clicked = true;
+                        }
+                        ui.label(egui::RichText::new("ScantoutPC").small().color(egui::Color32::from_rgb(200, 204, 214)));
                     }
-                } else {
-                    ui.add_space(2.0);
-                    if ui.button(egui::RichText::new("● ScantoutPC — cliquer pour agrandir").small()).clicked() {
-                        self.exit_mini(ui.ctx());
-                    }
-                }
+                });
             });
-            });
+            if clicked {
+                self.exit_mini(ui.ctx());
+            }
         } else {
         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
             ui.add(egui::TextEdit::multiline(&mut self.text)
