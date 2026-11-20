@@ -202,7 +202,7 @@ fn history_append(dir: &std::path::Path, line: &str) {
 
 
 const MINI_W: f32 = 230.0;
-const MINI_H: f32 = 30.0;
+const MINI_H: f32 = 150.0;
 const NORMAL_SIZE: egui::Vec2 = egui::vec2(460.0, 360.0);
 
 impl ScantoutApp {
@@ -1094,10 +1094,20 @@ impl eframe::App for ScantoutApp {
             }
         }
         if self.mini {
-            ui.horizontal_centered(|ui| {
-                ui.add_space(2.0);
-                if ui.button(egui::RichText::new("● ScantoutPC — cliquer pour agrandir").small()).clicked() {
-                    self.exit_mini(ui.ctx());
+            ui.vertical_centered(|ui| {
+                if let Some(tex) = &self.capture {
+                    let size = tex.size_vec2();
+                    let scale = (224.0 / size.x).min((MINI_H - 8.0) / size.y).min(1.0);
+                    let fitted = egui::vec2((size.x * scale).max(1.0), (size.y * scale).max(1.0));
+                    let img = egui::Image::from_texture(tex).fit_to_exact_size(fitted).sense(egui::Sense::click());
+                    if ui.add(img).on_hover_text("Cliquer pour agrandir").clicked() {
+                        self.exit_mini(ui.ctx());
+                    }
+                } else {
+                    ui.add_space(2.0);
+                    if ui.button(egui::RichText::new("● ScantoutPC — cliquer pour agrandir").small()).clicked() {
+                        self.exit_mini(ui.ctx());
+                    }
                 }
             });
         } else {
