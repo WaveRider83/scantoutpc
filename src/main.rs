@@ -1185,10 +1185,10 @@ impl eframe::App for ScantoutApp {
                 self.mini_icon = Some(ui.ctx().load_texture("mini-icon", img, egui::TextureOptions::LINEAR));
             }
             let mut clicked = false;
+            let full = ui.max_rect();
+            ui.painter().rect_filled(full, 0.0, egui::Color32::from_rgb(24, 26, 33));
+            ui.painter().rect_stroke(full, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(72, 76, 90)), egui::StrokeKind::Inside);
             egui::Frame::new()
-                .fill(egui::Color32::from_rgb(24, 26, 33))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(72, 76, 90)))
-                .corner_radius(12.0)
                 .inner_margin(6.0)
                 .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
