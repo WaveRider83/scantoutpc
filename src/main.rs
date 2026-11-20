@@ -272,8 +272,19 @@ fn scan_history() -> Vec<(u64, std::path::PathBuf, Option<std::path::PathBuf>)> 
                 let name = e.file_name().to_string_lossy().to_string();
                 if let Some(rest) = name.strip_prefix("cap_") {
                     if let Some(ts) = rest.strip_suffix(".png").and_then(|x| x.parse::<u64>().ok()) {
-                        let txt = d.join(format!("ocr_{ts}.txt"));
-                        v.push((ts, e.path(), txt.exists().then_some(txt)));
+                        let exact = d.join(format!("ocr_{ts}.txt"));
+                        let txt = if exact.exists() {
+                            Some(exact)
+                        } else {
+                            std::fs::read_dir(&d).ok().and_then(|rd| {
+                                rd.flatten()
+                                    .filter_map(|f| f.file_name().to_string_lossy().strip_prefix("ocr_").and_then(|r| r.strip_suffix(".txt")).and_then(|n| n.parse::<u64>().ok()).map(|t| (t, f.path())))
+                                    .filter(|(t, _)| t.abs_diff(ts) <= 5)
+                                    .min_by_key(|(t, _)| t.abs_diff(ts))
+                                    .map(|(_, p)| p)
+                            })
+                        };
+                        v.push((ts, e.path(), txt));
                     }
                 }
             }
@@ -662,7 +673,6 @@ impl ScantoutApp {
                                 // DEBUG TEMP : texte OCR a cote des dumps
                                 if self.keep_history {
                                     if let Some(d) = dump_dir() {
-                                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                                         let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &composed);
                                         let preview: String = composed.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
                                         history_append(&d, &format!("{ts} ocr chars={} :: {}", composed.chars().count(), preview));
@@ -1140,16 +1150,17 @@ impl eframe::App for ScantoutApp {
                                 ui.label(egui::RichText::new(trunc).small().color(ui.visuals().text_color()));
                                 ui.horizontal(|ui| {
                                     if ui.button("Charger").clicked() {
-                                        if let Ok(bytes) = std::fs::read(png) {
-                                            if let Ok(img) = image::load_from_memory(&bytes) {
+                                        let img_ok = std::fs::read(png).ok()
+                                            .and_then(|b| image::load_from_memory(&b).ok())
+                                            .map(|img| {
                                                 let rgba = img.to_rgba8();
                                                 let size = [rgba.width() as usize, rgba.height() as usize];
                                                 let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
                                                 self.capture = Some(ui.ctx().load_texture("capture", color, egui::TextureOptions::LINEAR));
-                                            }
-                                        }
+                                            })
+                                            .is_some();
                                         self.text = txt.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
-                                        self.status = "capture chargée depuis l'historique".into();
+                                        self.status = if img_ok { "capture chargée depuis l'historique".into() } else { "image illisible (fichier déplacé ou supprimé ?)".into() };
                                     }
                                     if ui.button("Copier").clicked() {
                                         if let Some(p) = txt {
