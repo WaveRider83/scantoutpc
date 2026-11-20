@@ -187,17 +187,10 @@ fn icon_rgba() -> (Vec<u8>, u32, u32) {
 }
 
 
-// DEBUG TEMP : premier dossier de dump creable (a retirer apres le debug)
 fn dump_dir() -> Option<std::path::PathBuf> {
-    let mut cand: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(p) = std::env::var("SCANTOUT_CAPTURES") { cand.push(std::path::PathBuf::from(p)); }
-    cand.push(std::path::PathBuf::from(r"<local>\scantoutpc\captures"));
-    cand.push(std::path::PathBuf::from(r"\\local-share\<local>\scantoutpc\captures"));
-    cand.push(std::path::PathBuf::from(r"\\local-share\scantoutpc\captures"));
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(d) = exe.parent() { cand.push(d.join("captures")); }
-    }
-    cand.into_iter().find(|d| d.exists() || std::fs::create_dir_all(d).is_ok())
+    let dir = std::env::current_exe().ok()?.parent()?.join("captures");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
 }
 
 fn history_append(dir: &std::path::Path, line: &str) {
