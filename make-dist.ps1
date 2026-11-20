@@ -33,4 +33,4 @@ $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
 "$hash  ScantoutPC-$Version-portable.zip" | Out-File -Encoding ascii (Join-Path $dist "SHA256SUMS.txt")
 Write-Host "OK : $zip"
 Write-Host "SHA256: $hash"
-Write-Host "Packs zh/ko dans dist\packs (a copier dans <local>\scantoutpc\packs\)"
+Write-Host "Packs zh/ko dans dist\packs (a uploader sur la release GitHub : gh release upload v<ver> dist\packs\*)"
