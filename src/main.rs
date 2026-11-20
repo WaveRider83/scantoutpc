@@ -943,6 +943,18 @@ impl eframe::App for ScantoutApp {
                 self.picking = true;
             }
         }
+        if let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::DoubleClick { button: tray_icon::MouseButton::Left, .. } = event {
+                if self.mini {
+                    self.exit_mini(ctx);
+                } else {
+                    self.main_visible = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+            }
+        }
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().0.as_str() {
                 "toggle" => self.toggle_main(ctx),
