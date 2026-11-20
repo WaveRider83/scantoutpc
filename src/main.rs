@@ -610,9 +610,6 @@ impl ScantoutApp {
             Some(z) => match self.pending_capture.take().map(Ok).unwrap_or_else(|| capture_zone(&z, self.hw_accel)) {
                 Ok(img) => {
                     dbg_log("capture_zone ok");
-                    let dump = std::env::temp_dir().join("scantoutpc_capture.png");
-                    let _ = img.save(&dump);
-                    // DEBUG TEMP : dump de la capture pour analyse (a retirer)
                     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                     if self.keep_history {
                         if let Some(d) = dump_dir() {
@@ -1143,9 +1140,16 @@ impl eframe::App for ScantoutApp {
                                 ui.label(egui::RichText::new(trunc).small().color(ui.visuals().text_color()));
                                 ui.horizontal(|ui| {
                                     if ui.button("Charger").clicked() {
-                                        if let Some(p) = txt {
-                                            self.text = std::fs::read_to_string(p).unwrap_or_default();
+                                        if let Ok(bytes) = std::fs::read(png) {
+                                            if let Ok(img) = image::load_from_memory(&bytes) {
+                                                let rgba = img.to_rgba8();
+                                                let size = [rgba.width() as usize, rgba.height() as usize];
+                                                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                                                self.capture = Some(ui.ctx().load_texture("capture", color, egui::TextureOptions::LINEAR));
+                                            }
                                         }
+                                        self.text = txt.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+                                        self.status = "capture chargée depuis l'historique".into();
                                     }
                                     if ui.button("Copier").clicked() {
                                         if let Some(p) = txt {
