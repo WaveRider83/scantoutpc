@@ -893,12 +893,8 @@ impl eframe::App for ScantoutApp {
                 "zone" => self.picking = true,
                 "quit" => std::process::exit(0),
                 "about" => {
+                    self.exit_mini(ctx);
                     self.show_about = true;
-                    self.main_visible = true;
-                    self.mini = false;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 "opt_auto" => {
                     self.auto_copy = !self.auto_copy;
