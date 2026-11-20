@@ -99,8 +99,9 @@ fn main() -> eframe::Result<()> {
     let tray_menu = Menu::new();
     let item_toggle = MenuItem::with_id("toggle", "Afficher / Masquer", true, None);
     let item_zone = MenuItem::with_id("zone", "Definir la zone...", true, None);
+    let item_about = MenuItem::with_id("about", "À propos…", true, None);
     let item_quit = MenuItem::with_id("quit", "Quitter", true, None);
-    let _ = tray_menu.append_items(&[&item_toggle, &item_zone, &PredefinedMenuItem::separator(), &options_sub, &PredefinedMenuItem::separator(), &item_quit]);
+    let _ = tray_menu.append_items(&[&item_toggle, &item_zone, &PredefinedMenuItem::separator(), &options_sub, &PredefinedMenuItem::separator(), &item_about, &item_quit]);
     let _tray = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
         .with_tooltip("ScantoutPC")
@@ -170,6 +171,7 @@ fn main() -> eframe::Result<()> {
                 recording: false,
                 pack_rx: None,
                 pack_pending_lang: None,
+                show_about: false,
             }))
         }),
     )
@@ -593,6 +595,7 @@ struct ScantoutApp {
     recording: bool,
     pack_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pack_pending_lang: Option<String>,
+    show_about: bool,
 }
 
 impl ScantoutApp {
@@ -888,6 +891,14 @@ impl eframe::App for ScantoutApp {
                 "toggle" => self.toggle_main(ctx),
                 "zone" => self.picking = true,
                 "quit" => std::process::exit(0),
+                "about" => {
+                    self.show_about = true;
+                    self.main_visible = true;
+                    self.mini = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 "opt_auto" => {
                     self.auto_copy = !self.auto_copy;
                     self.tray_opts.auto_copy.set_checked(self.auto_copy);
@@ -1009,6 +1020,28 @@ impl eframe::App for ScantoutApp {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
             } else {
                 self.enter_mini(ui.ctx());
+            }
+        }
+        if self.show_about {
+            let mut open = true;
+            egui::Window::new("À propos de ScantoutPC")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ui.ctx(), |ui| {
+                    ui.heading("ScantoutPC");
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    ui.add_space(4.0);
+                    ui.label("Capture et OCR de zones d'écran, 100 % local.");
+                    ui.label("© 2026 Cédric Burnotte");
+                    ui.add_space(4.0);
+                    ui.label("Licence : MIT (voir LICENSE).");
+                    ui.label("OCR : PP-OCR via oar-ocr / ONNX Runtime · Capture : GDI / Windows.Graphics.Capture");
+                    ui.hyperlink_to("Code source : github.com/WaveRider83/scantoutpc", "https://github.com/WaveRider83/scantoutpc");
+                });
+            if !open {
+                self.show_about = false;
             }
         }
         if self.picking && self.overlay_shots.is_none() {
