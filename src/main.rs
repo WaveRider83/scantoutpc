@@ -173,6 +173,8 @@ fn main() -> eframe::Result<()> {
                 pack_rx: None,
                 pack_pending_lang: None,
                 show_about: false,
+                update_rx: None,
+                update_info: None,
             }))
         }),
     )
@@ -318,6 +320,33 @@ fn pack_base_url() -> String {
         .unwrap_or_else(|_| "https://github.com/WaveRider83/scantoutpc/releases/download/v0.2.1".to_string())
         .trim_end_matches('/')
         .to_string()
+}
+
+fn parse_ver(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim().trim_start_matches('v');
+    let mut it = s.split('.');
+    let a = it.next()?.parse().ok()?;
+    let b = it.next().unwrap_or("0").parse().ok()?;
+    let c = it.next().unwrap_or("0").parse().ok()?;
+    Some((a, b, c))
+}
+
+fn check_latest_release() -> Result<Option<String>, String> {
+    let resp = ureq::get("https://api.github.com/repos/WaveRider83/scantoutpc/releases/latest")
+        .set("User-Agent", "scantoutpc")
+        .call()
+        .map_err(|e| e.to_string())?;
+    let body = resp.into_string().map_err(|e| e.to_string())?;
+    let tag = body
+        .split("\"tag_name\"")
+        .nth(1)
+        .and_then(|s| s.split('"').nth(1))
+        .ok_or_else(|| "tag_name introuvable".to_string())?
+        .to_string();
+    match (parse_ver(&tag), parse_ver(env!("CARGO_PKG_VERSION"))) {
+        (Some(new), Some(cur)) if new > cur => Ok(Some(tag)),
+        _ => Ok(None),
+    }
 }
 
 fn pack_files(lang: &str) -> &'static [&'static str] {
@@ -604,6 +633,8 @@ struct ScantoutApp {
     pack_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pack_pending_lang: Option<String>,
     show_about: bool,
+    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
+    update_info: Option<Result<Option<String>, String>>,
 }
 
 impl ScantoutApp {
@@ -783,6 +814,13 @@ impl eframe::App for ScantoutApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // packs de langue téléchargés en tâche de fond
+        if let Some(rx) = &self.update_rx {
+            match rx.try_recv() {
+                Ok(res) => { self.update_info = Some(res); self.update_rx = None; }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.update_rx = None; }
+            }
+        }
         if let Some(rx) = &self.pack_rx {
             match rx.try_recv() {
                 Ok(Ok(msg)) => {
@@ -902,6 +940,11 @@ impl eframe::App for ScantoutApp {
                 "about" => {
                     self.exit_mini(ctx);
                     self.show_about = true;
+                    if self.update_info.is_none() && self.update_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || { let _ = tx.send(check_latest_release()); });
+                        self.update_rx = Some(rx);
+                    }
                 }
                 "opt_auto" => {
                     self.auto_copy = !self.auto_copy;
@@ -1043,6 +1086,18 @@ impl eframe::App for ScantoutApp {
                     ui.label("Licence : MIT (voir LICENSE).");
                     ui.label("OCR : PP-OCR via oar-ocr / ONNX Runtime · Capture : GDI / Windows.Graphics.Capture");
                     ui.hyperlink_to("Code source : github.com/WaveRider83/scantoutpc", "https://github.com/WaveRider83/scantoutpc");
+                    ui.add_space(4.0);
+                    match &self.update_info {
+                        None => { ui.label(egui::RichText::new("Vérification des mises à jour…").weak()); }
+                        Some(Ok(None)) => { ui.label(egui::RichText::new("✓ Vous utilisez la dernière version.").color(egui::Color32::from_rgb(110, 200, 120))); }
+                        Some(Ok(Some(tag))) => {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(format!("⬆ Mise à jour disponible : {tag}")).strong().color(egui::Color32::from_rgb(240, 180, 80)));
+                                ui.hyperlink_to("Télécharger", "https://github.com/WaveRider83/scantoutpc/releases/latest");
+                            });
+                        }
+                        Some(Err(_)) => { ui.label(egui::RichText::new("Mise à jour : vérification impossible (hors ligne ?)").weak()); }
+                    }
                 });
             if !open {
                 self.show_about = false;
