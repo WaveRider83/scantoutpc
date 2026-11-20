@@ -49,11 +49,6 @@ fn capture_zone(sel: &PickedZone, hw_accel: bool) -> Result<image::RgbaImage, St
 }
 
 fn main() -> eframe::Result<()> {
-    std::panic::set_hook(Box::new(|info| {
-        let msg = format!("{info}\n");
-        let _ = std::fs::write(std::env::temp_dir().join("scantoutpc_panic.log"), &msg);
-        let _ = std::fs::write(r"<local>\scantoutpc\scantoutpc_panic.log", &msg);
-    }));
     // pointe la DLL ONNX Runtime embarquee (build avec load-dynamic)
     if std::env::var_os("ORT_DYLIB_PATH").is_none() {
         if let Ok(exe) = std::env::current_exe() {
@@ -300,15 +295,7 @@ fn fmt_ts_local(ts: u64) -> String {
 }
 
 
-fn dbg_log(msg: &str) {
-    use std::io::Write;
-    let line = format!("{} {}\n", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0), msg);
-    for p in [std::path::PathBuf::from(r"<local>\scantoutpc\debug.log"), std::env::temp_dir().join("scantoutpc_debug.log")] {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-            let _ = f.write_all(line.as_bytes());
-        }
-    }
-}
+fn dbg_log(_msg: &str) {}
 
 fn exe_dir() -> Option<std::path::PathBuf> {
     std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())

@@ -10,3 +10,6 @@ kanban/*.db-wal
 #/target
 models/
 models/
+
+# kanban local (hors repo public)
+kanban/
