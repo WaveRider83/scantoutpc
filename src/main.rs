@@ -308,10 +308,11 @@ fn exe_dir() -> Option<std::path::PathBuf> {
 }
 
 // Packs de langue OCR téléchargeables à la demande (zh/ko trop lourds pour le zip de base).
-// Source : dossier local/réseau (file:///) ou HTTPS, surchargeable via SCANTOUT_PACK_BASE_URL.
+// Source : assets de la release GitHub ; surchargeable via SCANTOUT_PACK_BASE_URL
+// (ex. file:///... pour un dossier local ou un partage réseau).
 fn pack_base_url() -> String {
     std::env::var("SCANTOUT_PACK_BASE_URL")
-        .unwrap_or_else(|_| "file:///<local>/scantoutpc/packs".to_string())
+        .unwrap_or_else(|_| "https://github.com/WaveRider83/scantoutpc/releases/download/v0.2.1".to_string())
         .trim_end_matches('/')
         .to_string()
 }
