@@ -7,6 +7,12 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuIt
 mod barcode;
 mod gdi;
 mod ocr;
+mod translate;
+
+enum TradEvent {
+    Translated(String, Result<String, String>), // (langue cible, résultat)
+    Finished(Result<String, String>),           // install modèles / pip
+}
 
 // zone en points logiques (egui) ; ppp = pixels_per_point de la fenêtre overlay
 #[derive(Clone)]
@@ -81,11 +87,21 @@ fn main() -> eframe::Result<()> {
     let opt_barcode = CheckMenuItem::with_id("opt_barcode", "Décoder les codes-barres (QR, DataMatrix…)", true, cfg.decode_barcodes, None);
     let opt_top = CheckMenuItem::with_id("opt_top", "Toujours au premier plan", true, cfg.always_on_top, None);
     let opt_hw = CheckMenuItem::with_id("opt_hw", "Accélération matérielle", true, cfg.hw_accel, None);
+    let opt_trad = CheckMenuItem::with_id("opt_trad", "Traduction (Argos, hors-ligne)", true, cfg.trad_enabled, None);
+    let mut trad_lang_items: Vec<(String, CheckMenuItem)> = Vec::new();
+    let trad_langs_sub = Submenu::with_id("trad_langs", "Langues proposées", true);
+    for (code, name) in translate::LANGS {
+        let item = CheckMenuItem::with_id(format!("trad_lang_{code}"), *name, true, cfg.trad_langs.iter().any(|l| l == code), None);
+        let _ = trad_langs_sub.append(&item);
+        trad_lang_items.push((code.to_string(), item));
+    }
+    let trad_dl = MenuItem::with_id("trad_dl", "Télécharger les modèles de traduction…", true, None);
+    let trad_pip = MenuItem::with_id("trad_pip", "Installer/MAJ le moteur (pip)…", true, None);
     let lang_latin = CheckMenuItem::with_id("lang_latin", "Langue OCR : FR/EN (latin)", true, cfg.ocr_lang == "latin", None);
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, cfg.ocr_lang == "zh", None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, cfg.ocr_lang == "ko", None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &opt_top, &opt_hw, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &opt_top, &opt_hw, &PredefinedMenuItem::separator(), &opt_trad, &trad_langs_sub, &trad_dl, &trad_pip, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
@@ -96,6 +112,8 @@ fn main() -> eframe::Result<()> {
         barcode: opt_barcode.clone(),
         top: opt_top.clone(),
         hw: opt_hw.clone(),
+        trad: opt_trad.clone(),
+        trad_langs: trad_lang_items.clone(),
         latin: lang_latin.clone(),
         zh: lang_zh.clone(),
         ko: lang_ko.clone(),
@@ -196,9 +214,112 @@ fn main() -> eframe::Result<()> {
                 about_tex: None,
                 update_rx: None,
                 update_info: None,
+                trad_enabled: cfg.trad_enabled,
+                trad_langs: cfg.trad_langs.clone(),
+                trad_source: cfg.trad_source.clone(),
+                trad_rx: None,
+                trad_busy: false,
+                trad_result: None,
             }))
         }),
     )
+}
+
+fn star_points(cx: f32, cy: f32, r: f32) -> Vec<egui::Pos2> {
+    (0..10).map(|i| {
+        let rad = if i % 2 == 0 { r } else { r * 0.382 };
+        let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+        egui::pos2(cx + rad * a.cos(), cy + rad * a.sin())
+    }).collect()
+}
+
+fn arc_half(cx: f32, cy: f32, r: f32, bottom: bool) -> Vec<egui::Pos2> {
+    let steps = 24;
+    let mut pts = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let a = std::f32::consts::PI * (i as f32 / steps as f32);
+        let y = if bottom { cy + r * a.sin() } else { cy - r * a.sin() };
+        pts.push(egui::pos2(cx + r * a.cos(), y));
+    }
+    pts
+}
+
+fn paint_flag(p: &egui::Painter, rect: egui::Rect, code: &str) {
+    use egui::{Color32, Rect, pos2};
+    let (l, t, w, h) = (rect.left(), rect.top(), rect.width(), rect.height());
+    let rgb = |v: u32| Color32::from_rgb(((v >> 16) & 255) as u8, ((v >> 8) & 255) as u8, (v & 255) as u8);
+    let vstripes = |cols: &[u32]| {
+        let n = cols.len() as f32;
+        for (i, c) in cols.iter().enumerate() {
+            let x0 = l + w * i as f32 / n;
+            p.rect_filled(Rect::from_min_max(pos2(x0, t), pos2(l + w * (i as f32 + 1.0) / n, t + h)), 0.0, rgb(*c));
+        }
+    };
+    let hstripes = |cols: &[(u32, f32)]| {
+        let total: f32 = cols.iter().map(|c| c.1).sum();
+        let mut y = t;
+        for (c, frac) in cols {
+            let hh = h * frac / total;
+            p.rect_filled(Rect::from_min_max(pos2(l, y), pos2(l + w, y + hh)), 0.0, rgb(*c));
+            y += hh;
+        }
+    };
+    match code {
+        "fr" => vstripes(&[0x0055A4, 0xFFFFFF, 0xEF4135]),
+        "it" => vstripes(&[0x009246, 0xFFFFFF, 0xCE2B37]),
+        "de" => hstripes(&[(0x000000, 1.0), (0xDD0000, 1.0), (0xFFCE00, 1.0)]),
+        "es" => hstripes(&[(0xAA151B, 1.0), (0xF1BF00, 2.0), (0xAA151B, 1.0)]),
+        "pt" => {
+            p.rect_filled(Rect::from_min_max(pos2(l, t), pos2(l + w * 0.42, t + h)), 0.0, rgb(0x046A38));
+            p.rect_filled(Rect::from_min_max(pos2(l + w * 0.42, t), pos2(l + w, t + h)), 0.0, rgb(0xDA291C));
+            p.circle_filled(pos2(l + w * 0.42, t + h * 0.5), h * 0.22, rgb(0xFFE900));
+        }
+        "en" => {
+            for i in 0..7 {
+                let y0 = t + h * i as f32 / 7.0;
+                p.rect_filled(Rect::from_min_max(pos2(l, y0), pos2(l + w, y0 + h / 7.0)), 0.0, if i % 2 == 0 { rgb(0xB31942) } else { rgb(0xFFFFFF) });
+            }
+            p.rect_filled(Rect::from_min_max(pos2(l, t), pos2(l + w * 0.45, t + h * 4.0 / 7.0)), 0.0, rgb(0x0A3161));
+            for row in 0..3 {
+                for col in 0..4 {
+                    p.circle_filled(pos2(l + w * (0.07 + col as f32 * 0.11), t + h * (0.10 + row as f32 * 0.17)), h * 0.035, rgb(0xFFFFFF));
+                }
+            }
+        }
+        "zh" => {
+            p.rect_filled(rect, 0.0, rgb(0xDE2910));
+            let (cx, cy, r) = (l + w * 0.22, t + h * 0.32, h * 0.22);
+            let pts = star_points(cx, cy, r);
+            let center = egui::pos2(cx, cy);
+            // étoile concave : éventail de triangles depuis le centre (dans le noyau)
+            for i in 0..10 {
+                let tri = vec![center, pts[i], pts[(i + 1) % 10]];
+                p.add(egui::Shape::convex_polygon(tri, rgb(0xFFDE00), egui::Stroke::NONE));
+            }
+        }
+        "ko" => {
+            p.rect_filled(rect, 0.0, rgb(0xFFFFFF));
+            let c = egui::pos2(l + w * 0.5, t + h * 0.5);
+            let r = h * 0.32;
+            p.circle_filled(c, r, rgb(0xCD2E3A));
+            p.add(egui::Shape::convex_polygon(arc_half(c.x, c.y, r, true), rgb(0x0047A0), egui::Stroke::NONE));
+        }
+        "ja" => {
+            p.rect_filled(rect, 0.0, rgb(0xFFFFFF));
+            p.circle_filled(egui::pos2(l + w * 0.5, t + h * 0.5), h * 0.30, rgb(0xBC002D));
+        }
+        _ => { p.rect_filled(rect, 0.0, rgb(0x333333)); }
+    }
+    p.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, Color32::from_black_alpha(120)), egui::StrokeKind::Inside);
+}
+
+fn flag_button(ui: &mut egui::Ui, code: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(38.0, 25.0), egui::Sense::click());
+    paint_flag(ui.painter(), rect, code);
+    if resp.hovered() {
+        ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 80)), egui::StrokeKind::Outside);
+    }
+    resp.on_hover_text(format!("Traduire vers {}", translate::lang_name(code)))
 }
 
 fn icon_rgba() -> (Vec<u8>, u32, u32) {
@@ -359,7 +480,7 @@ fn exe_dir() -> Option<std::path::PathBuf> {
 // (ex. file:///... pour un dossier local ou un partage réseau).
 fn pack_base_url() -> String {
     std::env::var("SCANTOUT_PACK_BASE_URL")
-        .unwrap_or_else(|_| "https://github.com/WaveRider83/scantoutpc/releases/download/v0.2.1".to_string())
+        .unwrap_or_else(|_| format!("https://github.com/WaveRider83/scantoutpc/releases/download/v{}", env!("CARGO_PKG_VERSION")))
         .trim_end_matches('/')
         .to_string()
 }
@@ -373,8 +494,21 @@ fn parse_ver(s: &str) -> Option<(u64, u64, u64)> {
     Some((a, b, c))
 }
 
-fn check_latest_release() -> Result<Option<String>, String> {
-    let resp = ureq::get("https://api.github.com/repos/WaveRider83/scantoutpc/releases/latest")
+struct ReleaseInfo {
+    tag: String,
+    is_newer: bool,
+}
+
+fn http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(5))
+        .timeout_read(std::time::Duration::from_secs(20))
+        .build()
+}
+
+fn check_latest_release() -> Result<ReleaseInfo, String> {
+    let resp = http_agent()
+        .get("https://api.github.com/repos/WaveRider83/scantoutpc/releases/latest")
         .set("User-Agent", "scantoutpc")
         .call()
         .map_err(|e| e.to_string())?;
@@ -385,10 +519,11 @@ fn check_latest_release() -> Result<Option<String>, String> {
         .and_then(|s| s.split('"').nth(1))
         .ok_or_else(|| "tag_name introuvable".to_string())?
         .to_string();
-    match (parse_ver(&tag), parse_ver(env!("CARGO_PKG_VERSION"))) {
-        (Some(new), Some(cur)) if new > cur => Ok(Some(tag)),
-        _ => Ok(None),
-    }
+    let is_newer = match (parse_ver(&tag), parse_ver(env!("CARGO_PKG_VERSION"))) {
+        (Some(new), Some(cur)) => new > cur,
+        _ => false,
+    };
+    Ok(ReleaseInfo { tag, is_newer })
 }
 
 fn pack_files(lang: &str) -> &'static [&'static str] {
@@ -415,7 +550,7 @@ fn download_pack(lang: &str) -> Result<String, String> {
         if let Some(p) = url.strip_prefix("file:///") {
             std::fs::copy(p, &tmp).map_err(|e| format!("copie {f}: {e}"))?;
         } else {
-            let resp = ureq::get(&url).call().map_err(|e| format!("téléchargement {f}: {e}"))?;
+            let resp = http_agent().get(&url).call().map_err(|e| format!("téléchargement {f}: {e}"))?;
             let mut reader = resp.into_reader();
             let mut out = std::fs::File::create(&tmp).map_err(|e| format!("{f}: {e}"))?;
             std::io::copy(&mut reader, &mut out).map_err(|e| format!("écriture {f}: {e}"))?;
@@ -476,6 +611,9 @@ struct AppConfig {
     win_y: Option<i32>,
     win_w: Option<f32>,
     win_h: Option<f32>,
+    trad_enabled: bool,
+    trad_langs: Vec<String>,
+    trad_source: String,
 }
 
 fn ocr_lang_from_key(v: &str) -> ocr::OcrLang {
@@ -514,6 +652,9 @@ fn load_config() -> AppConfig {
         win_y: None,
         win_w: None,
         win_h: None,
+        trad_enabled: false,
+        trad_langs: vec!["en".into(), "fr".into()],
+        trad_source: "fr".into(),
     };
     // config.ini a cote de l'exe ; migration douce depuis l'ancien %APPDATA% si absent
     let raw = std::fs::read_to_string(config_path()).ok().or_else(|| legacy_config_path().and_then(|p| std::fs::read_to_string(p).ok()));
@@ -539,6 +680,9 @@ fn load_config() -> AppConfig {
                 "win_w" => cfg.win_w = v.parse::<f32>().ok(),
                 "win_h" => cfg.win_h = v.parse::<f32>().ok(),
                 "ocr_lang" => { if matches!(v, "latin" | "zh" | "ko") { cfg.ocr_lang = v.to_string(); } }
+                "trad_enabled" => cfg.trad_enabled = parse_bool(v),
+                "trad_langs" => { cfg.trad_langs = v.split(',').map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect(); }
+                "trad_source" => { if translate::LANGS.iter().any(|(c, _)| *c == v.to_lowercase()) { cfg.trad_source = v.to_lowercase(); } }
                 _ => {}
             }
         }
@@ -548,7 +692,7 @@ fn load_config() -> AppConfig {
 
 fn save_config(cfg: &AppConfig) {
     let body = format!(
-        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\n",
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\ntrad_enabled={}\ntrad_langs={}\ntrad_source={}\n",
         cfg.hotkey,
         cfg.start_mini as u8,
         cfg.auto_copy as u8,
@@ -563,6 +707,9 @@ fn save_config(cfg: &AppConfig) {
         cfg.win_y.map(|v| v.to_string()).unwrap_or_default(),
         cfg.win_w.map(|v| format!("{v:.0}")).unwrap_or_default(),
         cfg.win_h.map(|v| format!("{v:.0}")).unwrap_or_default(),
+        cfg.trad_enabled as u8,
+        cfg.trad_langs.join(","),
+        cfg.trad_source,
     );
     if let Err(e) = std::fs::write(config_path(), &body) {
         dbg_log(&format!("save_config FAILED: {e} (path: {})", config_path().display()));
@@ -651,6 +798,8 @@ struct TrayOptions {
     barcode: CheckMenuItem,
     top: CheckMenuItem,
     hw: CheckMenuItem,
+    trad: CheckMenuItem,
+    trad_langs: Vec<(String, CheckMenuItem)>,
 }
 
 struct ScantoutApp {
@@ -699,8 +848,14 @@ struct ScantoutApp {
     mini_flash: bool,
     mini_icon: Option<egui::TextureHandle>,
     about_tex: Option<egui::TextureHandle>,
-    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
-    update_info: Option<Result<Option<String>, String>>,
+    update_rx: Option<std::sync::mpsc::Receiver<Result<ReleaseInfo, String>>>,
+    update_info: Option<Result<ReleaseInfo, String>>,
+    trad_enabled: bool,
+    trad_langs: Vec<String>,
+    trad_source: String,
+    trad_rx: Option<std::sync::mpsc::Receiver<TradEvent>>,
+    trad_busy: bool,
+    trad_result: Option<(String, String)>,
 }
 
 impl ScantoutApp {
@@ -791,6 +946,7 @@ impl ScantoutApp {
                                     self.status = "aucun texte détecté".into();
                                 } else {
                                     self.text = composed.clone();
+                                    self.trad_result = None;
                                     if self.auto_copy {
                                         if let Ok(mut cb) = arboard::Clipboard::new() {
                                             let _ = cb.set_text(composed);
@@ -811,6 +967,7 @@ impl ScantoutApp {
                                 if let Some((fmt, code)) = &barcode_hit {
                                     let composed = format!("[{}] {}", fmt, code);
                                     self.text = composed.clone();
+                                    self.trad_result = None;
                                     if self.auto_copy {
                                         if let Ok(mut cb) = arboard::Clipboard::new() {
                                             let _ = cb.set_text(composed.clone());
@@ -856,6 +1013,9 @@ impl ScantoutApp {
             win_y: self.win_pos.map(|p| p[1]),
             win_w: self.win_size.map(|s| s[0]),
             win_h: self.win_size.map(|s| s[1]),
+            trad_enabled: self.trad_enabled,
+            trad_langs: self.trad_langs.clone(),
+            trad_source: self.trad_source.clone(),
         });
     }
 
@@ -922,6 +1082,28 @@ impl eframe::App for ScantoutApp {
                 Ok(res) => { self.update_info = Some(res); self.update_rx = None; }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.update_rx = None; }
+            }
+        }
+        if let Some(rx) = &self.trad_rx {
+            match rx.try_recv() {
+                Ok(TradEvent::Translated(target, res)) => {
+                    self.trad_busy = false;
+                    match res {
+                        Ok(t) => { self.trad_result = Some((target, t)); self.status = "traduction terminée".into(); }
+                        Err(e) => { self.status = format!("traduction : {e}"); }
+                    }
+                    self.trad_rx = None;
+                }
+                Ok(TradEvent::Finished(res)) => {
+                    self.trad_busy = false;
+                    self.status = match res {
+                        Ok(msg) => msg,
+                        Err(e) => format!("échec : {e}"),
+                    };
+                    self.trad_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.trad_rx = None; self.trad_busy = false; }
             }
         }
         if let Some(rx) = &self.pack_rx {
@@ -1099,6 +1281,35 @@ impl eframe::App for ScantoutApp {
                     self.status = if self.hw_accel { "capture GPU (WGC) activée".into() } else { "capture GDI (CPU) — GPU au repos".into() };
                     self.save_cfg();
                 }
+                "opt_trad" => {
+                    self.trad_enabled = !self.trad_enabled;
+                    self.tray_opts.trad.set_checked(self.trad_enabled);
+                    self.status = if self.trad_enabled { "traduction activée (hors-ligne)".into() } else { "traduction désactivée".into() };
+                    self.save_cfg();
+                }
+                "trad_dl" => {
+                    if self.trad_rx.is_none() {
+                        let langs = self.trad_langs.clone();
+                        if langs.is_empty() {
+                            self.status = "coche d'abord des langues (Options → Langues proposées)".into();
+                        } else {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            std::thread::spawn(move || { let _ = tx.send(TradEvent::Finished(translate::install_models(&langs))); });
+                            self.trad_rx = Some(rx);
+                            self.trad_busy = true;
+                            self.status = "téléchargement des modèles de traduction…".into();
+                        }
+                    }
+                }
+                "trad_pip" => {
+                    if self.trad_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || { let _ = tx.send(TradEvent::Finished(translate::pip_install())); });
+                        self.trad_rx = Some(rx);
+                        self.trad_busy = true;
+                        self.status = "pip install argostranslate…".into();
+                    }
+                }
                 "opt_top" => {
                     self.always_on_top = !self.always_on_top;
                     self.tray_opts.top.set_checked(self.always_on_top);
@@ -1114,6 +1325,19 @@ impl eframe::App for ScantoutApp {
                     clear_history_files();
                     self.hist_tex.clear();
                     self.status = "historique effacé".into();
+                }
+                ev if ev.starts_with("trad_lang_") => {
+                    let code = ev.trim_start_matches("trad_lang_").to_string();
+                    if let Some(item) = self.tray_opts.trad_langs.iter().find(|(c, _)| *c == code).map(|(_, i)| i.clone()) {
+                        if self.trad_langs.contains(&code) {
+                            self.trad_langs.retain(|c| c != &code);
+                            item.set_checked(false);
+                        } else {
+                            self.trad_langs.push(code.clone());
+                            item.set_checked(true);
+                        }
+                        self.save_cfg();
+                    }
                 }
                 "lang_latin" | "lang_zh" | "lang_ko" => {
                     let ev = event.id().0.clone();
@@ -1213,7 +1437,18 @@ impl eframe::App for ScantoutApp {
                     }
                     let fg = egui::Color32::from_rgb(235, 235, 235);
                     ui.heading(egui::RichText::new("ScantoutPC").color(fg).size(30.0));
-                    ui.label(egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(fg));
+                    ui.label(egui::RichText::new(format!("Version active : v{}", env!("CARGO_PKG_VERSION"))).color(fg));
+                    match &self.update_info {
+                        Some(Ok(info)) => {
+                            ui.label(egui::RichText::new(format!("Dernière version : v{}", info.tag.trim_start_matches('v'))).color(fg));
+                        }
+                        Some(Err(_)) => {
+                            ui.label(egui::RichText::new("Dernière version : indisponible (hors ligne ?)").weak());
+                        }
+                        None => {
+                            ui.label(egui::RichText::new("Dernière version : vérification…").weak());
+                        }
+                    }
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new("Capture et OCR de zones d'écran, 100 % local.").color(fg));
                     ui.label(egui::RichText::new("© 2026 Cédric Burnotte").color(fg));
@@ -1223,15 +1458,15 @@ impl eframe::App for ScantoutApp {
                     ui.hyperlink_to(egui::RichText::new("Code source : github.com/WaveRider83/scantoutpc").color(egui::Color32::from_rgb(255, 160, 80)), "https://github.com/WaveRider83/scantoutpc");
                     ui.add_space(4.0);
                     match &self.update_info {
-                        None => { ui.label(egui::RichText::new("Vérification des mises à jour…").weak()); }
-                        Some(Ok(None)) => { ui.label(egui::RichText::new("✓ Vous utilisez la dernière version.").color(egui::Color32::from_rgb(110, 200, 120))); }
-                        Some(Ok(Some(tag))) => {
+                        None => {}
+                        Some(Ok(info)) if !info.is_newer => { ui.label(egui::RichText::new("✓ Vous utilisez la dernière version.").color(egui::Color32::from_rgb(110, 200, 120))); }
+                        Some(Ok(info)) => {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(format!("⬆ Mise à jour disponible : {tag}")).strong().color(egui::Color32::from_rgb(240, 180, 80)));
+                                ui.label(egui::RichText::new(format!("⬆ Mise à jour disponible : {}", info.tag)).strong().color(egui::Color32::from_rgb(240, 180, 80)));
                                 ui.hyperlink_to("Télécharger", "https://github.com/WaveRider83/scantoutpc/releases/latest");
                             });
                         }
-                        Some(Err(_)) => { ui.label(egui::RichText::new("Mise à jour : vérification impossible (hors ligne ?)").weak()); }
+                        Some(Err(_)) => {}
                     }
                 });
             // clic en dehors de la fenêtre À propos -> fermer
@@ -1338,12 +1573,87 @@ impl eframe::App for ScantoutApp {
                 self.exit_mini(ui.ctx());
             }
         } else {
-        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-            ui.add(egui::TextEdit::multiline(&mut self.text)
-                .desired_width(f32::INFINITY)
-                .desired_rows(10)
-                .hint_text("Le texte capturé apparaîtra ici…"));
+        let mut trad_request: Option<String> = None;
+        let trad_source_before = self.trad_source.clone();
+        ui.horizontal(|ui| {
+            if self.trad_enabled {
+                ui.vertical(|ui| {
+                    egui::ComboBox::from_id_salt("trad_src")
+                        .width(52.0)
+                        .selected_text(self.trad_source.to_uppercase())
+                        .show_ui(ui, |ui| {
+                            for (code, name) in translate::LANGS {
+                                ui.selectable_value(&mut self.trad_source, code.to_string(), format!("{code} — {name}"));
+                            }
+                        });
+                    ui.add_space(2.0);
+                    let langs = self.trad_langs.clone();
+                    for code in &langs {
+                        if flag_button(ui, code).clicked() {
+                            trad_request = Some(code.clone());
+                        }
+                        ui.add_space(2.0);
+                    }
+                    if self.trad_busy {
+                        ui.add(egui::Spinner::new().size(18.0));
+                    }
+                });
+            }
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut self.text)
+                        .desired_width(ui.available_width())
+                        .desired_rows(10)
+                        .hint_text("Le texte capturé apparaîtra ici…"));
+                });
+            });
         });
+        if self.trad_source != trad_source_before {
+            self.save_cfg();
+        }
+        if let Some(target) = trad_request {
+            let text = self.text.trim().to_string();
+            if text.is_empty() {
+                self.status = "rien à traduire".into();
+            } else if target == self.trad_source {
+                self.status = "langue source = langue cible".into();
+            } else if self.trad_rx.is_none() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let from = self.trad_source.clone();
+                std::thread::spawn(move || {
+                    let res = translate::translate(&text, &from, &target);
+                    let _ = tx.send(TradEvent::Translated(target, res));
+                });
+                self.trad_rx = Some(rx);
+                self.trad_busy = true;
+                self.status = "traduction…".into();
+            }
+        }
+        if let Some((target, translated)) = self.trad_result.clone() {
+            ui.add_space(4.0);
+            let mut close = false;
+            egui::Frame::new()
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 90, 110)))
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("→ {}", translate::lang_name(&target))).strong());
+                        if ui.small_button("Copier").clicked() {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(translated.clone());
+                            }
+                            self.status = "traduction copiée ✓".into();
+                        }
+                        if ui.small_button("✕").clicked() {
+                            close = true;
+                        }
+                    });
+                    ui.add(egui::Label::new(egui::RichText::new(translated)).selectable(true));
+                });
+            if close {
+                self.trad_result = None;
+            }
+        }
         if let Some(tex) = &self.capture {
             let max_w = ui.available_width();
             let scale = (max_w / tex.size_vec2().x).min(120.0 / tex.size_vec2().y).min(1.0);
@@ -1394,6 +1704,7 @@ impl eframe::App for ScantoutApp {
                                             })
                                             .is_some();
                                         self.text = txt.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+                                        self.trad_result = None;
                                         self.status = if img_ok { "capture chargée depuis l'historique".into() } else { "image illisible (fichier déplacé ou supprimé ?)".into() };
                                     }
                                     if ui.button("Copier").clicked() {

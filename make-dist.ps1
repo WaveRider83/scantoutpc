@@ -19,6 +19,7 @@ Copy-Item "models\onnxruntime_providers_shared.dll" $stage
 # Modèles latin uniquement (zh/ko = packs téléchargeables)
 Copy-Item "models\det.onnx","models\rec_latin.onnx","models\rec_latin.dict" (Join-Path $stage "models")
 Copy-Item "assets\icon.ico" $stage -ErrorAction SilentlyContinue
+Copy-Item "tools\translate_sidecar.py" $stage
 Copy-Item "README.md" $stage
 
 # Packs langue (à déposer sur le partage / hébergement packs\)
