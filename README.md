@@ -1,6 +1,6 @@
 # ScantoutPC
 
-<p align="center"><img src="assets/src/logo_nf2_cropped.png" width="160" alt="ScantoutPC"></p>
+<p align="center"><img src="assets/icon_256.png" width="160" alt="ScantoutPC"></p>
 
 OCR live sur Windows 10/11 : zone fixe définie par l'utilisateur, survol → texte reconnu en direct.
 
