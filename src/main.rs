@@ -49,6 +49,10 @@ fn capture_zone(sel: &PickedZone, hw_accel: bool) -> Result<image::RgbaImage, St
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(feature = "debuglog")]
+    std::panic::set_hook(Box::new(|info| {
+        dbg_log(&format!("PANIC: {info}"));
+    }));
     // pointe la DLL ONNX Runtime embarquee (build avec load-dynamic)
     if std::env::var_os("ORT_DYLIB_PATH").is_none() {
         if let Ok(exe) = std::env::current_exe() {
@@ -115,16 +119,27 @@ fn main() -> eframe::Result<()> {
         let _ = hotkey_manager.register(default_hotkey());
     }
 
+    let saved_pos = if !cfg.start_mini {
+        cfg.win_x.zip(cfg.win_y).map(|(x, y)| {
+            let mon = 1920.0_f32; // bornage large; l'OS recale si multi-écran
+            let _ = mon;
+            (x.clamp(-32000, 32000), y.clamp(0, 32000))
+        })
+    } else { None };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: {
+            let vb = egui::ViewportBuilder::default()
             .with_title("ScantoutPC")
-            .with_inner_size(if cfg.start_mini { [MINI_W, MINI_H] } else { [460.0, 360.0] })
+            .with_inner_size(if cfg.start_mini { [MINI_W, MINI_H] } else { cfg.win_w.zip(cfg.win_h).map(|(w, h)| [w.max(200.0), h.max(150.0)]).unwrap_or([460.0, 360.0]) });
+            let vb = if let Some((x, y)) = saved_pos { vb.with_position([x as f32, y as f32]) } else { vb };
+            vb
             .with_min_inner_size([MINI_W, MINI_H])
             .with_decorations(!cfg.start_mini)
             .with_transparent(true)
             .with_always_on_top() // affiné juste après via WindowLevel si désactivé
             .with_resizable(true)
-            .with_icon({ let (rgba, w, h) = icon_rgba(); egui::IconData { rgba, width: w, height: h } }),
+            .with_icon({ let (rgba, w, h) = icon_rgba(); egui::IconData { rgba, width: w, height: h } })
+        },
         ..Default::default()
     };
 
@@ -173,8 +188,12 @@ fn main() -> eframe::Result<()> {
                 pack_rx: None,
                 pack_pending_lang: None,
                 show_about: false,
+                win_pos: cfg.win_x.zip(cfg.win_y).map(|(x, y)| [x, y]),
+                win_size: cfg.win_w.zip(cfg.win_h).map(|(w, h)| [w, h]),
+                last_pos_save: None,
                 mini_flash: false,
                 mini_icon: None,
+                about_tex: None,
                 update_rx: None,
                 update_info: None,
             }))
@@ -241,11 +260,16 @@ impl ScantoutApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(NORMAL_SIZE));
+        let restored = self.win_size.map(|s| egui::vec2(s[0].max(200.0), s[1].max(150.0))).unwrap_or(NORMAL_SIZE);
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(restored));
         let mon = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1920.0, 1080.0));
         if let Some(r) = self.prev_rect {
             let x = r.min.x.clamp(0.0, (mon.x - NORMAL_SIZE.x).max(0.0));
             let y = r.min.y.clamp(0.0, (mon.y - NORMAL_SIZE.y).max(0.0));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        } else if let Some(p) = self.win_pos {
+            let x = (p[0] as f32).clamp(0.0, (mon.x - NORMAL_SIZE.x).max(0.0));
+            let y = (p[1] as f32).clamp(0.0, (mon.y - NORMAL_SIZE.y).max(0.0));
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
@@ -310,6 +334,20 @@ fn fmt_ts_local(ts: u64) -> String {
 }
 
 
+#[cfg(feature = "debuglog")]
+fn dbg_log(msg: &str) {
+    use std::io::Write;
+    if let Some(dir) = exe_dir() {
+        let line = format!("{} {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("debug.log"))
+            .and_then(|mut f| f.write_all(line.as_bytes()));
+    }
+}
+
+#[cfg(not(feature = "debuglog"))]
 fn dbg_log(_msg: &str) {}
 
 fn exe_dir() -> Option<std::path::PathBuf> {
@@ -434,6 +472,10 @@ struct AppConfig {
     decode_barcodes: bool,
     always_on_top: bool,
     hw_accel: bool,
+    win_x: Option<i32>,
+    win_y: Option<i32>,
+    win_w: Option<f32>,
+    win_h: Option<f32>,
 }
 
 fn ocr_lang_from_key(v: &str) -> ocr::OcrLang {
@@ -468,6 +510,10 @@ fn load_config() -> AppConfig {
         decode_barcodes: true,
         always_on_top: true,
         hw_accel: false,
+        win_x: None,
+        win_y: None,
+        win_w: None,
+        win_h: None,
     };
     // config.ini a cote de l'exe ; migration douce depuis l'ancien %APPDATA% si absent
     let raw = std::fs::read_to_string(config_path()).ok().or_else(|| legacy_config_path().and_then(|p| std::fs::read_to_string(p).ok()));
@@ -488,6 +534,10 @@ fn load_config() -> AppConfig {
                 "decode_barcodes" => cfg.decode_barcodes = parse_bool(v),
                 "always_on_top" => cfg.always_on_top = parse_bool(v),
                 "hw_accel" => cfg.hw_accel = parse_bool(v),
+                "win_x" => cfg.win_x = v.parse::<i32>().ok(),
+                "win_y" => cfg.win_y = v.parse::<i32>().ok(),
+                "win_w" => cfg.win_w = v.parse::<f32>().ok(),
+                "win_h" => cfg.win_h = v.parse::<f32>().ok(),
                 "ocr_lang" => { if matches!(v, "latin" | "zh" | "ko") { cfg.ocr_lang = v.to_string(); } }
                 _ => {}
             }
@@ -498,7 +548,7 @@ fn load_config() -> AppConfig {
 
 fn save_config(cfg: &AppConfig) {
     let body = format!(
-        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\n",
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\n",
         cfg.hotkey,
         cfg.start_mini as u8,
         cfg.auto_copy as u8,
@@ -508,9 +558,15 @@ fn save_config(cfg: &AppConfig) {
         cfg.ocr_lang,
         cfg.decode_barcodes as u8,
         cfg.always_on_top as u8,
-        cfg.hw_accel as u8
+        cfg.hw_accel as u8,
+        cfg.win_x.map(|v| v.to_string()).unwrap_or_default(),
+        cfg.win_y.map(|v| v.to_string()).unwrap_or_default(),
+        cfg.win_w.map(|v| format!("{v:.0}")).unwrap_or_default(),
+        cfg.win_h.map(|v| format!("{v:.0}")).unwrap_or_default(),
     );
-    let _ = std::fs::write(config_path(), body);
+    if let Err(e) = std::fs::write(config_path(), &body) {
+        dbg_log(&format!("save_config FAILED: {e} (path: {})", config_path().display()));
+    }
 }
 
 fn egui_mods(m: &egui::Modifiers) -> Modifiers {
@@ -637,8 +693,12 @@ struct ScantoutApp {
     pack_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pack_pending_lang: Option<String>,
     show_about: bool,
+    win_pos: Option<[i32; 2]>,
+    win_size: Option<[f32; 2]>,
+    last_pos_save: Option<std::time::Instant>,
     mini_flash: bool,
     mini_icon: Option<egui::TextureHandle>,
+    about_tex: Option<egui::TextureHandle>,
     update_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
     update_info: Option<Result<Option<String>, String>>,
 }
@@ -792,6 +852,10 @@ impl ScantoutApp {
             always_on_top: self.always_on_top,
             hw_accel: self.hw_accel,
             ocr_lang: ocr_lang_key(&self.ocr_lang).to_string(),
+            win_x: self.win_pos.map(|p| p[0]),
+            win_y: self.win_pos.map(|p| p[1]),
+            win_w: self.win_size.map(|s| s[0]),
+            win_h: self.win_size.map(|s| s[1]),
         });
     }
 
@@ -807,11 +871,17 @@ impl ScantoutApp {
         }
         if self.main_visible {
             self.main_visible = false;
+            self.show_about = false;
+            self.save_cfg();
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         } else {
             self.main_visible = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             if !self.mini {
+                if let Some(p) = self.win_pos {
+                    dbg_log(&format!("restore pos {},{}", p[0], p[1]));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(p[0] as f32, p[1] as f32)));
+                }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
         }
@@ -824,6 +894,28 @@ impl eframe::App for ScantoutApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.mini && self.main_visible && self.mini_collapsing.is_none() {
+            if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
+                if r.width() < 100.0 || r.height() < 80.0 {
+                    // fenêtre en cours de réduction : ne pas mémoriser
+                } else {
+                let p = [r.min.x.round() as i32, r.min.y.round() as i32];
+                let s = [r.width(), r.height()];
+                if self.win_size != Some(s) {
+                    self.win_size = Some(s);
+                    self.last_pos_save = None; // force un save rapide aussi pour la taille
+                }
+                if self.win_pos != Some(p) {
+                    self.win_pos = Some(p);
+                    let due = self.last_pos_save.map(|t: std::time::Instant| t.elapsed() > std::time::Duration::from_secs(1)).unwrap_or(true);
+                    if due {
+                        self.last_pos_save = Some(std::time::Instant::now());
+                        self.save_cfg();
+                    }
+                }
+                }
+            }
+        }
         // packs de langue téléchargés en tâche de fond
         if let Some(rx) = &self.update_rx {
             match rx.try_recv() {
@@ -927,6 +1019,8 @@ impl eframe::App for ScantoutApp {
                 self.mini_collapsing = None;
                 self.mini_since = None;
                 self.main_visible = false;
+                self.show_about = false;
+                self.save_cfg();
                 dbg_log("mini hidden");
             }
         }
@@ -959,7 +1053,7 @@ impl eframe::App for ScantoutApp {
             match event.id().0.as_str() {
                 "toggle" => self.toggle_main(ctx),
                 "zone" => self.picking = true,
-                "quit" => std::process::exit(0),
+                "quit" => { self.save_cfg(); std::process::exit(0); }
                 "about" => {
                     self.exit_mini(ctx);
                     self.show_about = true;
@@ -1087,28 +1181,46 @@ impl eframe::App for ScantoutApp {
                 self.mini_since = None;
                 self.mini_collapsing = None;
                 self.main_visible = false;
+                self.show_about = false;
+                self.save_cfg();
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
             } else {
                 self.enter_mini(ui.ctx());
             }
         }
         if self.show_about {
+            if self.about_tex.is_none() {
+                let img = image::load_from_memory(include_bytes!("../assets/about_art.png")).expect("about_art.png").to_rgba8();
+                let size = [img.width() as usize, img.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                self.about_tex = Some(ui.ctx().load_texture("about-art", color, egui::TextureOptions::LINEAR));
+            }
             let mut open = true;
+            let mut about_rect: Option<egui::Rect> = None;
             egui::Window::new("À propos de ScantoutPC")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
+                .fixed_size(egui::vec2(600.0, 400.0))
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .frame(egui::Frame::new().inner_margin(egui::Margin::same(18)).fill(egui::Color32::from_rgb(12, 12, 14)))
                 .show(ui.ctx(), |ui| {
-                    ui.heading("ScantoutPC");
-                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    about_rect = Some(ui.max_rect().expand2(egui::vec2(18.0, 40.0)));
+                    if let Some(tex) = &self.about_tex {
+                        let rect = ui.max_rect();
+                        ui.painter().image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                        ui.painter().rect_filled(rect, 0.0, egui::Color32::from_black_alpha(90));
+                    }
+                    let fg = egui::Color32::from_rgb(235, 235, 235);
+                    ui.heading(egui::RichText::new("ScantoutPC").color(fg).size(30.0));
+                    ui.label(egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(fg));
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Capture et OCR de zones d'écran, 100 % local.").color(fg));
+                    ui.label(egui::RichText::new("© 2026 Cédric Burnotte").color(fg));
                     ui.add_space(4.0);
-                    ui.label("Capture et OCR de zones d'écran, 100 % local.");
-                    ui.label("© 2026 Cédric Burnotte");
-                    ui.add_space(4.0);
-                    ui.label("Licence : MIT (voir LICENSE).");
-                    ui.label("OCR : PP-OCR via oar-ocr / ONNX Runtime · Capture : GDI / Windows.Graphics.Capture");
-                    ui.hyperlink_to("Code source : github.com/WaveRider83/scantoutpc", "https://github.com/WaveRider83/scantoutpc");
+                    ui.label(egui::RichText::new("Licence : MIT (voir LICENSE).").color(fg));
+                    ui.add(egui::Label::new(egui::RichText::new("OCR : PP-OCR via oar-ocr / ONNX Runtime\nCapture : GDI / Windows.Graphics.Capture").color(fg)).wrap());
+                    ui.hyperlink_to(egui::RichText::new("Code source : github.com/WaveRider83/scantoutpc").color(egui::Color32::from_rgb(255, 160, 80)), "https://github.com/WaveRider83/scantoutpc");
                     ui.add_space(4.0);
                     match &self.update_info {
                         None => { ui.label(egui::RichText::new("Vérification des mises à jour…").weak()); }
@@ -1122,6 +1234,15 @@ impl eframe::App for ScantoutApp {
                         Some(Err(_)) => { ui.label(egui::RichText::new("Mise à jour : vérification impossible (hors ligne ?)").weak()); }
                     }
                 });
+            // clic en dehors de la fenêtre À propos -> fermer
+            let outside_click = ui.ctx().input(|i| {
+                i.pointer.primary_pressed() && i.pointer.interact_pos().map(|p| {
+                    about_rect.map(|r| !r.contains(p)).unwrap_or(false)
+                }).unwrap_or(false)
+            });
+            if outside_click {
+                open = false;
+            }
             if !open {
                 self.show_about = false;
             }

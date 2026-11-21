@@ -16,3 +16,6 @@ tray-icon = "0.26.1"
 xcap = { version = "0.9.10", features = ["wgc"] }
 windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
 ureq = "2"
+
+[features]
+debuglog = []
