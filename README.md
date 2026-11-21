@@ -10,6 +10,7 @@ OCR live sur Windows 10/11 : zone fixe définie par l'utilisateur, survol → te
 
 ## Stack retenue (2026-11-18)
 - **App** : Rust + egui (eframe). Pas de Node/npm, binaire unique. Tray via `tray-icon`, raccourci global Ctrl+Shift+O via `global-hotkey`, overlay de sélection en second viewport egui. Cibles Windows 10/11
+- **Mise à jour** : l'écran À propos affiche la version active et la dernière version publiée ; bouton « Installer maintenant » = téléchargement du zip + mise à jour automatique (updater PowerShell qui attend la fermeture puis remplace les fichiers et relance l'app).
 - **OCR** : PP-OCR (PaddleOCR) via ONNX Runtime (`ort`), local — bon en zh/ko, aucune dépendance aux packs linguistiques Windows
 - **Traduction** : Argos Translate, hors-ligne — sidecar Python (`translate_sidecar.py` + `argostranslate` via pip), modèles téléchargeables par langue (pivot anglais). Lancer `pip install argostranslate` puis « Télécharger les modèles » dans les Options
 - Packaging : à définir (MSI/MSIX ou exe portable)

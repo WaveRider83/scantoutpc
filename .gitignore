@@ -13,3 +13,6 @@ models/
 
 # kanban local (hors repo public)
 kanban/
+
+dist/
+*.bak

@@ -214,6 +214,8 @@ fn main() -> eframe::Result<()> {
                 about_tex: None,
                 update_rx: None,
                 update_info: None,
+                update_dl_rx: None,
+                update_dl_busy: false,
                 trad_enabled: cfg.trad_enabled,
                 trad_langs: cfg.trad_langs.clone(),
                 trad_source: cfg.trad_source.clone(),
@@ -506,24 +508,90 @@ fn http_agent() -> ureq::Agent {
         .build()
 }
 
-fn check_latest_release() -> Result<ReleaseInfo, String> {
+fn latest_tag_from_api() -> Result<String, String> {
     let resp = http_agent()
         .get("https://api.github.com/repos/WaveRider83/scantoutpc/releases/latest")
         .set("User-Agent", "scantoutpc")
         .call()
         .map_err(|e| e.to_string())?;
     let body = resp.into_string().map_err(|e| e.to_string())?;
-    let tag = body
-        .split("\"tag_name\"")
+    body.split("\"tag_name\"")
         .nth(1)
         .and_then(|s| s.split('"').nth(1))
-        .ok_or_else(|| "tag_name introuvable".to_string())?
-        .to_string();
+        .map(|t| t.to_string())
+        .ok_or_else(|| "tag_name introuvable (rate-limit ou réponse inattendue)".to_string())
+}
+
+// Fallback sans API (pas de quota) : suit la redirection de /releases/latest et lit le tag dans l'URL finale.
+fn latest_tag_from_web() -> Result<String, String> {
+    let resp = http_agent()
+        .get("https://github.com/WaveRider83/scantoutpc/releases/latest")
+        .set("User-Agent", "scantoutpc")
+        .call()
+        .map_err(|e| e.to_string())?;
+    let url = resp.get_url().to_string();
+    url.rsplit("/tag/")
+        .next()
+        .filter(|t| t.starts_with('v'))
+        .map(|t| t.to_string())
+        .ok_or_else(|| format!("tag introuvable dans {url}"))
+}
+
+fn check_latest_release() -> Result<ReleaseInfo, String> {
+    let tag = latest_tag_from_api().or_else(|e1| {
+        dbg_log(&format!("check MAJ via API échoué ({e1}), fallback page web"));
+        latest_tag_from_web()
+    })?;
     let is_newer = match (parse_ver(&tag), parse_ver(env!("CARGO_PKG_VERSION"))) {
         (Some(new), Some(cur)) => new > cur,
         _ => false,
     };
     Ok(ReleaseInfo { tag, is_newer })
+}
+
+/// Télécharge le zip de la release `tag` dans le dossier temporaire, retourne le chemin du zip.
+fn download_update(tag: &str) -> Result<std::path::PathBuf, String> {
+    let ver = tag.trim_start_matches('v');
+    let url = format!("https://github.com/WaveRider83/scantoutpc/releases/download/{tag}/ScantoutPC-{ver}-portable.zip");
+    let dest = std::env::temp_dir().join(format!("ScantoutPC-{ver}-portable.zip"));
+    let resp = http_agent().get(&url).call().map_err(|e| format!("téléchargement : {e}"))?;
+    let mut reader = resp.into_reader();
+    let mut file = std::fs::File::create(&dest).map_err(|e| format!("création {} : {e}", dest.display()))?;
+    std::io::copy(&mut reader, &mut file).map_err(|e| format!("écriture : {e}"))?;
+    Ok(dest)
+}
+
+/// Extrait le zip via PowerShell et lance un updater qui attend la fermeture de l'app,
+/// copie les fichiers par-dessus, puis relance scantoutpc.exe.
+fn spawn_updater(zip: &std::path::Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let install_dir = exe.parent().ok_or("dossier de l'exe introuvable")?.to_path_buf();
+    let extract = std::env::temp_dir().join("scantoutpc-update");
+    let zip_s = zip.to_string_lossy().replace('\'', "''");
+    let extract_s = extract.to_string_lossy().replace('\'', "''");
+    let install_s = install_dir.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='Stop';          Remove-Item -Recurse -Force '{extract_s}' -ErrorAction SilentlyContinue;          Expand-Archive -LiteralPath '{zip_s}' -DestinationPath '{extract_s}' -Force;          $src = Join-Path '{extract_s}' 'ScantoutPC';          Wait-Process -Id {pid} -ErrorAction SilentlyContinue;          Copy-Item -Path (Join-Path $src '*') -Destination '{install_s}' -Recurse -Force;          Start-Process (Join-Path '{install_s}' 'scantoutpc.exe');          Remove-Item -Recurse -Force '{extract_s}' -ErrorAction SilentlyContinue;          Remove-Item -Force '{zip_s}' -ErrorAction SilentlyContinue",
+        pid = std::process::id()
+    );
+    let script_path = std::env::temp_dir().join("scantoutpc-update.ps1");
+    std::fs::write(&script_path, script).map_err(|e| format!("écriture updater : {e}"))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
+            .arg(&script_path)
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map_err(|e| format!("lancement de l'updater : {e}"))?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = script_path;
+        return Err("auto-update uniquement sur Windows".into());
+    }
+    Ok(())
 }
 
 fn pack_files(lang: &str) -> &'static [&'static str] {
@@ -850,6 +918,8 @@ struct ScantoutApp {
     about_tex: Option<egui::TextureHandle>,
     update_rx: Option<std::sync::mpsc::Receiver<Result<ReleaseInfo, String>>>,
     update_info: Option<Result<ReleaseInfo, String>>,
+    update_dl_rx: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    update_dl_busy: bool,
     trad_enabled: bool,
     trad_langs: Vec<String>,
     trad_source: String,
@@ -1104,6 +1174,22 @@ impl eframe::App for ScantoutApp {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.trad_rx = None; self.trad_busy = false; }
+            }
+        }
+        if let Some(rx) = &self.update_dl_rx {
+            match rx.try_recv() {
+                Ok(Ok(zip)) => {
+                    match spawn_updater(&zip) {
+                        Ok(()) => {
+                            self.status = "mise à jour en cours : fermeture puis relance…".into();
+                            std::process::exit(0);
+                        }
+                        Err(e) => { self.status = format!("updater : {e}"); self.update_dl_busy = false; self.update_dl_rx = None; }
+                    }
+                }
+                Ok(Err(e)) => { self.status = format!("téléchargement : {e}"); self.update_dl_busy = false; self.update_dl_rx = None; }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.update_dl_busy = false; self.update_dl_rx = None; }
             }
         }
         if let Some(rx) = &self.pack_rx {
@@ -1463,7 +1549,18 @@ impl eframe::App for ScantoutApp {
                         Some(Ok(info)) => {
                             ui.horizontal(|ui| {
                                 ui.label(egui::RichText::new(format!("⬆ Mise à jour disponible : {}", info.tag)).strong().color(egui::Color32::from_rgb(240, 180, 80)));
-                                ui.hyperlink_to("Télécharger", "https://github.com/WaveRider83/scantoutpc/releases/latest");
+                                if self.update_dl_busy {
+                                    ui.add(egui::Spinner::new().size(16.0));
+                                    ui.label(egui::RichText::new("téléchargement…").weak());
+                                } else if ui.button("Installer maintenant").clicked() {
+                                    let tag = info.tag.clone();
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    std::thread::spawn(move || { let _ = tx.send(download_update(&tag)); });
+                                    self.update_dl_rx = Some(rx);
+                                    self.update_dl_busy = true;
+                                    self.status = format!("téléchargement de {tag}…");
+                                }
+                                ui.hyperlink_to("releases", "https://github.com/WaveRider83/scantoutpc/releases/latest");
                             });
                         }
                         Some(Err(_)) => {}
