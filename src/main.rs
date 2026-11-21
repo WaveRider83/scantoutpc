@@ -838,8 +838,12 @@ fn hotkey_label(hk: &HotKey) -> String {
 
 
 fn make_icon() -> Icon {
-    let (rgba, w, h) = icon_rgba();
-    Icon::from_rgba(rgba, w, h).expect("icon")
+    // tray : icône 32px dédiée (évite le downscale grossier du 256 par Windows)
+    let img = image::load_from_memory(include_bytes!("../assets/icon_32.png"))
+        .expect("icon_32 embarquée illisible")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).expect("icon")
 }
 
 struct OverlayShot {
