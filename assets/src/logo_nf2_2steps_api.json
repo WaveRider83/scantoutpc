@@ -1,0 +1,173 @@
+{
+  "1": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "nf2-Q4_K_M.gguf"
+    }
+  },
+  "5": {
+    "class_type": "CLIPLoaderGGUF",
+    "inputs": {
+      "clip_name": "Qwen3-4B-Q8_0.gguf",
+      "type": "lumina2"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "Flat modern vector logo emblem for a PC screen scanning software: a bold computer monitor outline with a magnifying glass in front of it and scan-frame corner brackets at the corners, geometric minimal shapes, deep charcoal background, vivid cyan-teal accent, clean crisp edges, centered composition, generous negative space, no text, no letters, no watermark",
+      "clip": [
+        "5",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "6",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    }
+  },
+  "9": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "11",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    }
+  },
+  "60": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "nf2_2s",
+      "images": [
+        "12",
+        0
+      ]
+    }
+  },
+  "2": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "nf2-dedistill-lora.safetensors",
+      "strength_model": 0.5
+    }
+  },
+  "4": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "shift": 6.0
+    }
+  },
+  "14": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "nf2-dedistill-lora.safetensors",
+      "strength_model": 0.0
+    }
+  },
+  "3": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "14",
+        0
+      ],
+      "shift": 6.0
+    }
+  },
+  "10": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "9",
+        0
+      ],
+      "add_noise": "enable",
+      "noise_seed": 1234,
+      "steps": 2,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 1,
+      "return_with_leftover_noise": "enable"
+    }
+  },
+  "11": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "10",
+        0
+      ],
+      "add_noise": "disable",
+      "noise_seed": 1234,
+      "steps": 2,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 1,
+      "end_at_step": 2,
+      "return_with_leftover_noise": "disable"
+    }
+  }
+}
