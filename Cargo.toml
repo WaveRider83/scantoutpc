@@ -1,6 +1,6 @@
 [package]
 name = "scantoutpc"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 
 [dependencies]
@@ -19,3 +19,6 @@ ureq = "2"
 
 [features]
 debuglog = []
+
+[build-dependencies]
+embed-resource = "2"
