@@ -1554,8 +1554,9 @@ impl eframe::App for ScantoutApp {
                                     ui.label(egui::RichText::new("téléchargement…").weak());
                                 } else if ui.button("Installer maintenant").clicked() {
                                     let tag = info.tag.clone();
+                                    let tag_thread = tag.clone();
                                     let (tx, rx) = std::sync::mpsc::channel();
-                                    std::thread::spawn(move || { let _ = tx.send(download_update(&tag)); });
+                                    std::thread::spawn(move || { let _ = tx.send(download_update(&tag_thread)); });
                                     self.update_dl_rx = Some(rx);
                                     self.update_dl_busy = true;
                                     self.status = format!("téléchargement de {tag}…");
