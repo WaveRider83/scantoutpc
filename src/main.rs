@@ -2191,7 +2191,7 @@ impl eframe::App for ScantoutApp {
         egui::Panel::bottom("bottom_chrome")
             .frame(egui::Frame::NONE)
             .show_separator_line(false)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
         if let Some((target, translated)) = self.trad_result.clone() {
             ui.add_space(4.0);
             let mut close = false;
@@ -2396,10 +2396,11 @@ impl eframe::App for ScantoutApp {
             }
             ui.vertical(|ui| {
                 let text_max_h = ui.available_height().max(120.0);
+                let edit_rows = estimate_rows(&self.text, ui.available_width()).clamp(8, 80);
                 egui::ScrollArea::vertical().max_height(text_max_h).show(ui, |ui| {
                     let mut edit = egui::TextEdit::multiline(&mut self.text)
                         .desired_width(ui.available_width())
-                        .desired_rows(8)
+                        .desired_rows(edit_rows)
                         .hint_text("Le texte capturé apparaîtra ici…");
                     if self.layout_keep {
                         edit = edit.font(egui::TextStyle::Monospace);
