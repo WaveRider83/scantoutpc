@@ -16,3 +16,4 @@ kanban/
 
 dist/
 *.bak
+*.bak*

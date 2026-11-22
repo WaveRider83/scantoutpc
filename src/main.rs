@@ -222,6 +222,11 @@ fn main() -> eframe::Result<()> {
                 trad_rx: None,
                 trad_busy: false,
                 trad_result: None,
+                show_welcome: cfg.show_welcome,
+                welcome_dont_show: false,
+                dep_missing: check_dependencies(),
+                capture_hidden_pos: None,
+                prev_picking: false,
             }))
         }),
     )
@@ -607,6 +612,24 @@ fn pack_installed(lang: &str) -> bool {
     pack_files(lang).iter().all(|f| dir.join(f).exists())
 }
 
+/// Vérifie les dépendances indispensables au premier lancement.
+/// Retourne la liste des éléments manquants (vide = tout est OK).
+fn check_dependencies() -> Vec<String> {
+    let mut missing = Vec::new();
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| std::path::PathBuf::from("."));
+    let dll = if cfg!(windows) { "onnxruntime.dll" } else { "libonnxruntime.so" };
+    if !exe_dir.join(dll).exists() && !exe_dir.join("models").join(dll).exists() {
+        missing.push(format!("{dll} (à côté de l'exécutable)"));
+    }
+    let mdir = ocr::models_dir();
+    for f in ["det.onnx", "rec_latin.onnx", "rec_latin.dict"] {
+        if !mdir.join(f).exists() {
+            missing.push(format!("models/{f}"));
+        }
+    }
+    missing
+}
+
 fn download_pack(lang: &str) -> Result<String, String> {
     let base = pack_base_url();
     let dir = ocr::models_dir();
@@ -682,6 +705,7 @@ struct AppConfig {
     trad_enabled: bool,
     trad_langs: Vec<String>,
     trad_source: String,
+    show_welcome: bool,
 }
 
 fn ocr_lang_from_key(v: &str) -> ocr::OcrLang {
@@ -723,6 +747,7 @@ fn load_config() -> AppConfig {
         trad_enabled: false,
         trad_langs: vec!["en".into(), "fr".into()],
         trad_source: "fr".into(),
+        show_welcome: true,
     };
     // config.ini a cote de l'exe ; migration douce depuis l'ancien %APPDATA% si absent
     let raw = std::fs::read_to_string(config_path()).ok().or_else(|| legacy_config_path().and_then(|p| std::fs::read_to_string(p).ok()));
@@ -751,6 +776,7 @@ fn load_config() -> AppConfig {
                 "trad_enabled" => cfg.trad_enabled = parse_bool(v),
                 "trad_langs" => { cfg.trad_langs = v.split(',').map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect(); }
                 "trad_source" => { if translate::LANGS.iter().any(|(c, _)| *c == v.to_lowercase()) { cfg.trad_source = v.to_lowercase(); } }
+                "show_welcome" => cfg.show_welcome = parse_bool(v),
                 _ => {}
             }
         }
@@ -760,7 +786,7 @@ fn load_config() -> AppConfig {
 
 fn save_config(cfg: &AppConfig) {
     let body = format!(
-        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\ntrad_enabled={}\ntrad_langs={}\ntrad_source={}\n",
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\ntrad_enabled={}\ntrad_langs={}\ntrad_source={}\nshow_welcome={}\n",
         cfg.hotkey,
         cfg.start_mini as u8,
         cfg.auto_copy as u8,
@@ -778,6 +804,7 @@ fn save_config(cfg: &AppConfig) {
         cfg.trad_enabled as u8,
         cfg.trad_langs.join(","),
         cfg.trad_source,
+        cfg.show_welcome as u8,
     );
     if let Err(e) = std::fs::write(config_path(), &body) {
         dbg_log(&format!("save_config FAILED: {e} (path: {})", config_path().display()));
@@ -930,6 +957,11 @@ struct ScantoutApp {
     trad_rx: Option<std::sync::mpsc::Receiver<TradEvent>>,
     trad_busy: bool,
     trad_result: Option<(String, String)>,
+    show_welcome: bool,
+    welcome_dont_show: bool,
+    dep_missing: Vec<String>,
+    capture_hidden_pos: Option<egui::Pos2>,
+    prev_picking: bool,
 }
 
 impl ScantoutApp {
@@ -1090,6 +1122,7 @@ impl ScantoutApp {
             trad_enabled: self.trad_enabled,
             trad_langs: self.trad_langs.clone(),
             trad_source: self.trad_source.clone(),
+            show_welcome: self.show_welcome,
         });
     }
 
@@ -1322,9 +1355,66 @@ impl eframe::App for ScantoutApp {
             }
         }
         if let Ok(event) = MenuEvent::receiver().try_recv() {
-            match event.id().0.as_str() {
+            let id = event.id().0.clone();
+            self.handle_menu_event(id.as_str(), ctx);
+        }
+        if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+            if event.state == global_hotkey::HotKeyState::Pressed {
+                if self.recording { return; }
+                dbg_log("hotkey pressed");
+                // La selection de zone passe par des overlays egui enfants de la fenetre principale :
+                // elle DOIT etre visible, sinon egui panique ("user callback was never called").
+                // On restaure la fenetre puis on laisse une ou deux frames s'ecouler avant de
+                // creer les overlays.
+                let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                let evis = ctx.input(|i| i.viewport().visible());
+                dbg_log(&format!("hotkey state: mini={} main_visible={} minimized={:?} egui_visible={:?}", self.mini, self.main_visible, minimized, evis));
+                let was_hidden = !self.main_visible || minimized;
+                if self.mini {
+                    if was_hidden {
+                        self.enter_mini(ctx);
+                    } else {
+                        self.mini_since = Some(std::time::Instant::now());
+                    }
+                    self.begin_pick(ctx);
+                } else if was_hidden {
+                    self.main_visible = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.begin_pick(ctx);
+                } else {
+                    self.begin_pick(ctx);
+                }
+            }
+        }
+    }
+
+
+    /// Masque la fenêtre principale en la parquant hors écrans, puis lance la sélection de zone.
+    /// (La fenêtre doit rester "visible" pour egui — les overlays sont ses enfants —
+    /// donc on la déplace hors du champ de vision plutôt que de la cacher.)
+    fn begin_pick(&mut self, ctx: &egui::Context) {
+        if self.capture_hidden_pos.is_none() {
+            if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
+                self.capture_hidden_pos = Some(r.min);
+            }
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-30000.0, -30000.0)));
+        self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+        dbg_log("begin_pick: window parked off-screen");
+    }
+
+    fn end_pick_restore(&mut self, ctx: &egui::Context) {
+        if let Some(p) = self.capture_hidden_pos.take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+        }
+    }
+
+    fn handle_menu_event(&mut self, id: &str, ctx: &egui::Context) {
+            match id {
                 "toggle" => self.toggle_main(ctx),
-                "zone" => self.picking = true,
+                "zone" => self.begin_pick(ctx),
                 "quit" => { self.save_cfg(); std::process::exit(0); }
                 "about" => {
                     self.exit_mini(ctx);
@@ -1430,8 +1520,7 @@ impl eframe::App for ScantoutApp {
                     }
                 }
                 "lang_latin" | "lang_zh" | "lang_ko" => {
-                    let ev = event.id().0.clone();
-                    let key = match ev.as_str() { "lang_zh" => "zh", "lang_ko" => "ko", _ => "latin" };
+                    let key = match id { "lang_zh" => "zh", "lang_ko" => "ko", _ => "latin" };
                     if key != "latin" && !pack_installed(key) {
                         if self.pack_rx.is_none() {
                             let (tx, rx) = std::sync::mpsc::channel();
@@ -1447,47 +1536,17 @@ impl eframe::App for ScantoutApp {
                 }
                 _ => {}
             }
-        }
-        if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state == global_hotkey::HotKeyState::Pressed {
-                if self.recording { return; }
-                dbg_log("hotkey pressed");
-                // La selection de zone passe par des overlays egui enfants de la fenetre principale :
-                // elle DOIT etre visible, sinon egui panique ("user callback was never called").
-                // On restaure la fenetre puis on laisse une ou deux frames s'ecouler avant de
-                // creer les overlays.
-                let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-                let evis = ctx.input(|i| i.viewport().visible());
-                dbg_log(&format!("hotkey state: mini={} main_visible={} minimized={:?} egui_visible={:?}", self.mini, self.main_visible, minimized, evis));
-                let was_hidden = !self.main_visible || minimized;
-                if self.mini {
-                    if was_hidden {
-                        self.enter_mini(ctx);
-                        self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
-                        dbg_log("mini reshown + pick differe");
-                    } else {
-                        // deja en mini visible : capturer sans agrandir
-                        self.mini_since = Some(std::time::Instant::now());
-                        self.picking = true;
-                        dbg_log("picking=true (mini, sans agrandir)");
-                    }
-                } else if was_hidden {
-                    self.main_visible = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
-                    dbg_log("restore + pick differe");
-                } else {
-                    self.picking = true;
-                    dbg_log("picking=true");
-                }
-            }
-        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.prev_picking && !self.picking {
+            self.end_pick_restore(&ctx);
+        }
+        if self.capture_hidden_pos.is_some() && self.pick_at.is_none() && !self.picking {
+            self.end_pick_restore(&ctx); // filet de sécurité : ne jamais laisser la fenêtre hors écran
+        }
+        self.prev_picking = self.picking;
         if ui.input(|i| i.viewport().close_requested()) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
             dbg_log(&format!("close requested: mini={} main_visible={}", self.mini, self.main_visible));
@@ -1584,6 +1643,57 @@ impl eframe::App for ScantoutApp {
                 self.show_about = false;
             }
         }
+        if self.show_welcome {
+            let mut open = true;
+            egui::Window::new("Bienvenue dans ScantoutPC")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size(egui::vec2(460.0, 300.0))
+                .show(ui.ctx(), |ui| {
+                    ui.heading("Capture et OCR hors-ligne");
+                    ui.add_space(6.0);
+                    ui.label("1. Appuie sur Ctrl+Shift+O (modifiable) ou choisis « Définir la zone » dans le menu ☰ / l'icône zone.");
+                    ui.label("2. Glisse pour sélectionner une zone de l'écran : le texte est reconnu et copié dans le presse-papier.");
+                    ui.label("3. Retrouve tes captures dans l'Historique, en bas de la fenêtre.");
+                    ui.add_space(4.0);
+                    ui.label("Tout est local : aucune image n'est envoyée sur Internet.");
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut self.welcome_dont_show, "Ne plus afficher ce message");
+                    ui.add_space(4.0);
+                    if ui.button("Compris !").clicked() { open = false; }
+                });
+            if !open {
+                self.show_welcome = false;
+                if self.welcome_dont_show { self.save_cfg(); }
+            }
+        }
+        if !self.dep_missing.is_empty() {
+            egui::Window::new("Dépendances manquantes")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size(egui::vec2(480.0, 240.0))
+                .show(ui.ctx(), |ui| {
+                    ui.label("ScantoutPC ne peut pas fonctionner correctement : il manque");
+                    ui.add_space(2.0);
+                    for m in &self.dep_missing {
+                        ui.label(egui::RichText::new(format!("• {m}")).color(egui::Color32::from_rgb(240, 160, 80)));
+                    }
+                    ui.add_space(6.0);
+                    ui.label("La version portable officielle contient tout le nécessaire :");
+                    ui.hyperlink_to(egui::RichText::new("Télécharger la dernière version").color(egui::Color32::from_rgb(255, 160, 80)), "https://github.com/WaveRider83/scantoutpc/releases/latest");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Vérifier à nouveau").clicked() {
+                            self.dep_missing = check_dependencies();
+                            if self.dep_missing.is_empty() { self.status = "dépendances OK ✓".into(); }
+                        }
+                        if ui.button("Ignorer").clicked() { self.dep_missing.clear(); }
+                    });
+                });
+        }
         if self.picking && self.overlay_shots.is_none() {
             self.pending_capture = None;
             dbg_log(&format!("spawn overlays start (hw_accel={})", self.hw_accel));
@@ -1675,6 +1785,48 @@ impl eframe::App for ScantoutApp {
                 self.exit_mini(ui.ctx());
             }
         } else {
+        // Barre de menu (accès aux fonctions du tray depuis la fenêtre)
+        ui.horizontal(|ui| {
+            ui.menu_button(egui::RichText::new("☰  Menu").strong(), |ui| {
+                if ui.button("Définir la zone…").clicked() { self.handle_menu_event("zone", &ctx); ui.close(); }
+                ui.separator();
+                if ui.checkbox(&mut self.auto_copy, "Copie auto dans le presse-papier").changed() { self.tray_opts.auto_copy.set_checked(self.auto_copy); self.save_cfg(); }
+                if ui.checkbox(&mut self.keep_history, "Conserver l'historique des captures").changed() { self.tray_opts.keep_history.set_checked(self.keep_history); self.save_cfg(); }
+                if ui.checkbox(&mut self.light_mode, "Thème clair").changed() { self.tray_opts.light.set_checked(self.light_mode); self.save_cfg(); }
+                if ui.checkbox(&mut self.always_on_top, "Toujours au premier plan").changed() { self.tray_opts.top.set_checked(self.always_on_top); ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal })); self.save_cfg(); }
+                if ui.checkbox(&mut self.hw_accel, "Accélération matérielle (GPU)").changed() { self.tray_opts.hw.set_checked(self.hw_accel); self.save_cfg(); }
+                if ui.checkbox(&mut self.decode_barcodes, "Décoder les codes-barres").changed() { self.tray_opts.barcode.set_checked(self.decode_barcodes); self.save_cfg(); }
+                if ui.checkbox(&mut self.auto_resize, "Adapter la fenêtre à la capture").changed() { self.tray_opts.resize.set_checked(self.auto_resize); self.save_cfg(); }
+                if ui.checkbox(&mut self.start_mini, "Réduire au lancement").changed() { self.tray_opts.start_mini.set_checked(self.start_mini); self.save_cfg(); }
+                let mut autostart = self.tray_opts.autostart.is_checked();
+                if ui.checkbox(&mut autostart, "Démarrer avec Windows").changed() { self.handle_menu_event("opt_autostart", &ctx); }
+                ui.separator();
+                ui.menu_button("Langue OCR", |ui| {
+                    for (key, label) in [("latin", "FR / EN (latin)"), ("zh", "中文 (chinois)"), ("ko", "한국어 (coréen)")] {
+                        let selected = ocr_lang_key(&self.ocr_lang) == key;
+                        if ui.selectable_label(selected, label).clicked() {
+                            let id = match key { "zh" => "lang_zh", "ko" => "lang_ko", _ => "lang_latin" };
+                            self.handle_menu_event(id, &ctx);
+                            ui.close();
+                        }
+                    }
+                });
+                ui.menu_button("Traduction (hors-ligne)", |ui| {
+                    if ui.checkbox(&mut self.trad_enabled, "Traduction activée").changed() { self.tray_opts.trad.set_checked(self.trad_enabled); self.save_cfg(); }
+                    if ui.button("Télécharger les modèles…").clicked() { self.handle_menu_event("trad_dl", &ctx); ui.close(); }
+                    if ui.button("Installer / MAJ le moteur (pip)…").clicked() { self.handle_menu_event("trad_pip", &ctx); ui.close(); }
+                });
+                ui.separator();
+                if ui.button("Effacer l'historique").clicked() { self.handle_menu_event("opt_clear", &ctx); ui.close(); }
+                ui.separator();
+                if ui.button("À propos…").clicked() { self.handle_menu_event("about", &ctx); ui.close(); }
+                if ui.button("Quitter").clicked() { self.handle_menu_event("quit", &ctx); }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).small().weak());
+            });
+        });
+        ui.separator();
         let mut trad_request: Option<String> = None;
         let trad_source_before = self.trad_source.clone();
         ui.horizontal(|ui| {
@@ -1762,20 +1914,40 @@ impl eframe::App for ScantoutApp {
             ui.add(egui::Image::from_texture(tex).max_width(tex.size_vec2().x * scale));
         }
         let hist = scan_history();
-        egui::CollapsingHeader::new(format!("Historique ({} capture{})", hist.len(), if hist.len() > 1 { "s" } else { "" }))
+        egui::CollapsingHeader::new(egui::RichText::new(format!("🕘  Historique — {} capture{}", hist.len(), if hist.len() > 1 { "s" } else { "" })).strong())
             .id_salt("historique")
             .default_open(false)
             .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Captures précédentes").small().weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !hist.is_empty() && ui.small_button("🗑 Tout effacer").clicked() {
+                            clear_history_files();
+                            self.hist_tex.clear();
+                            self.status = "historique effacé".into();
+                        }
+                    });
+                });
+                ui.add_space(2.0);
                 let hist_h = ui.available_height().max(140.0);
                 egui::ScrollArea::vertical().max_height(hist_h).show(ui, |ui| {
+                    if hist.is_empty() {
+                        ui.add_space(12.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("Aucune capture pour l'instant").weak());
+                            ui.label(egui::RichText::new("Définis une zone puis capture : la vignette apparaîtra ici.").small().weak());
+                        });
+                        ui.add_space(12.0);
+                    }
                     for (ts, png, txt) in &hist {
-                        egui::Frame::group(ui.style()).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+                        let card_fill = if ui.visuals().dark_mode { egui::Color32::from_rgb(34, 36, 46) } else { egui::Color32::from_rgb(244, 244, 248) };
+                        egui::Frame::new().fill(card_fill).corner_radius(8.0).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let key = ts.to_string();
                             if !self.hist_tex.contains_key(&key) {
                                 if let Ok(bytes) = std::fs::read(png) {
                                     if let Ok(img) = image::load_from_memory(&bytes) {
-                                        let t = img.thumbnail(120, 72).to_rgba8();
+                                        let t = img.thumbnail(168, 108).to_rgba8();
                                         let (w, h) = t.dimensions();
                                         let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], t.as_raw());
                                         let tex = ui.ctx().load_texture(format!("hist-{ts}"), color, egui::TextureOptions::LINEAR);
@@ -1784,18 +1956,21 @@ impl eframe::App for ScantoutApp {
                                 }
                             }
                             if let Some(tex) = self.hist_tex.get(&key) {
-                                ui.add(egui::Image::from_texture(tex).fit_to_exact_size(egui::vec2(72.0, 46.0)));
+                                egui::Frame::new().corner_radius(6.0).stroke(egui::Stroke::new(1.0, egui::Color32::from_black_alpha(60))).show(ui, |ui| {
+                                    ui.add(egui::Image::from_texture(tex).fit_to_exact_size(egui::vec2(84.0, 54.0)));
+                                });
                             }
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(fmt_ts_local(*ts)).small().weak());
+                                ui.label(egui::RichText::new(fmt_ts_local(*ts)).small().strong());
                                 let preview: String = txt.as_ref()
                                     .and_then(|p| std::fs::read_to_string(p).ok())
                                     .map(|t| t.split('\n').take(2).collect::<Vec<_>>().join(" "))
                                     .unwrap_or_default();
                                 let trunc: String = preview.chars().take(90).collect();
-                                ui.label(egui::RichText::new(trunc).small().color(ui.visuals().text_color()));
+                                ui.label(egui::RichText::new(if trunc.is_empty() { "(pas de texte)".to_string() } else { trunc }).small().weak());
+                                ui.add_space(2.0);
                                 ui.horizontal(|ui| {
-                                    if ui.button("Charger").clicked() {
+                                    if ui.small_button("Charger").clicked() {
                                         let img_ok = std::fs::read(png).ok()
                                             .and_then(|b| image::load_from_memory(&b).ok())
                                             .map(|img| {
@@ -1809,7 +1984,7 @@ impl eframe::App for ScantoutApp {
                                         self.trad_result = None;
                                         self.status = if img_ok { "capture chargée depuis l'historique".into() } else { "image illisible (fichier déplacé ou supprimé ?)".into() };
                                     }
-                                    if ui.button("Copier").clicked() {
+                                    if ui.small_button("Copier").clicked() {
                                         if let Some(p) = txt {
                                             if let Ok(t) = std::fs::read_to_string(p) {
                                                 if let Ok(mut cb) = arboard::Clipboard::new() {
@@ -1819,7 +1994,7 @@ impl eframe::App for ScantoutApp {
                                             }
                                         }
                                     }
-                                    if ui.button("✕").clicked() {
+                                    if ui.small_button("🗑").on_hover_text("Supprimer cette capture").clicked() {
                                         let _ = std::fs::remove_file(png);
                                         if let Some(p) = txt { let _ = std::fs::remove_file(p); }
                                         self.hist_tex.remove(&key);
@@ -1836,7 +2011,7 @@ impl eframe::App for ScantoutApp {
                             });
                         });
                         });
-                        ui.add_space(4.0);
+                        ui.add_space(6.0);
                     }
                 });
             });
