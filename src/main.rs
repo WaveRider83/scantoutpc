@@ -1924,7 +1924,7 @@ impl eframe::App for ScantoutApp {
                 .order(egui::Order::Foreground)
                 .fixed_pos(egui::pos2(6.0, 44.0))
                 .show(&menu_ctx, |ui| {
-                    let r = egui::Frame::popup(ui.ctx().style()).show(ui, |ui| {
+                    let r = egui::Frame::popup(ui.style()).show(ui, |ui| {
                         egui::ScrollArea::vertical().max_height(NEED_H - 60.0).show(ui, |ui| {
                             self.menu_contents(ui, &menu_ctx);
                         });
