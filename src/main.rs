@@ -1554,7 +1554,7 @@ impl ScantoutApp {
         if show_version { right_w += 52.0; }
         if right_w > 0.0 {
             let mut right = ui.new_child(egui::UiBuilder::new()
-                .max_rect(egui::Rect::from_min_max(egui::pos2(rect.right() - 3.0 * btn - right_w, rect.top()), egui::pos2(rect.right() - 3.0 * btn, rect.bottom())))
+                .max_rect(egui::Rect::from_min_max(egui::pos2(rect.right() - 2.0 * btn - right_w, rect.top()), egui::pos2(rect.right() - 2.0 * btn, rect.bottom())))
                 .layout(egui::Layout::right_to_left(egui::Align::Center)));
             if show_version {
                 right.label(egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(10.0).color(muted));
@@ -1566,17 +1566,10 @@ impl ScantoutApp {
                 }
             }
         }
-        // min / max / close (positionnés depuis le bord droit)
+        // max / close (positionnés depuis le bord droit) — pas de bouton réduire : la fenêtre
+        // réduite ne se restaurait pas via la barre des tâches ; la croix fait office de réduction (mini).
         let close_r = egui::Rect::from_min_size(egui::pos2(rect.right() - btn, rect.top()), egui::vec2(btn, bar_h));
         let max_r = close_r.translate(egui::vec2(-btn, 0.0));
-        let min_r = max_r.translate(egui::vec2(-btn, 0.0));
-        let min_resp = ui.interact(min_r, ui.scope_id().with("tb-min"), egui::Sense::click());
-        if min_resp.hovered() { ui.painter().rect_filled(min_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
-        {
-            let c = min_r.center();
-            ui.painter().line_segment([egui::pos2(c.x - 5.0, c.y + 0.5), egui::pos2(c.x + 5.0, c.y + 0.5)], egui::Stroke::new(1.6, fg));
-        }
-        if min_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
         let max_resp = ui.interact(max_r, ui.scope_id().with("tb-max"), egui::Sense::click());
         if max_resp.hovered() { ui.painter().rect_filled(max_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
