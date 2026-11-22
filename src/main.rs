@@ -29,17 +29,23 @@ fn monitor_key(m: &xcap::Monitor) -> String {
 
 
 /// Estime le nombre de lignes visuelles d'un texte (retour à la ligne automatique inclus).
-fn estimate_rows(text: &str, width_pts: f32) -> usize {
-    let cpl = (((width_pts - 56.0) / 8.0) as usize).max(20);
-    text.lines()
-        .map(|l| ((l.chars().count() + cpl - 1) / cpl).max(1))
-        .sum::<usize>()
-        .max(1)
+fn window_height_for(rows: usize, line_h: f32, mon_h: f32) -> f32 {
+    (rows as f32 * line_h + 290.0).clamp(340.0, (mon_h - 60.0).max(380.0))
 }
 
-fn window_height_for(rows: usize, _has_capture: bool, mon_h: f32) -> f32 {
-    let _ = _has_capture;
-    (rows as f32 * 19.0 + 290.0).clamp(340.0, (mon_h - 60.0).max(380.0))
+// Compte exact de lignes enroulées, via le moteur de texte egui lui-même
+fn wrapped_rows(ctx: &egui::Context, text: &str, wrap_w: f32, mono: bool) -> (usize, f32) {
+    let style = ctx.global_style();
+    let text_style = if mono { egui::TextStyle::Monospace } else { egui::TextStyle::Body };
+    let font_id = style
+        .text_styles
+        .get(&text_style)
+        .cloned()
+        .unwrap_or_else(|| egui::FontId::proportional(14.0));
+    let galley = ctx.fonts_mut(|f| f.layout(text.to_string(), font_id, egui::Color32::WHITE, wrap_w.max(10.0)));
+    let rows = galley.rows.len().max(1);
+    let line_h = galley.size().y / rows as f32;
+    (rows, if line_h > 1.0 { line_h } else { 19.0 })
 }
 
 fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
@@ -1144,7 +1150,8 @@ impl ScantoutApp {
             let h = if result.is_empty() {
                 (size[1] as f32 / pp + 240.0).clamp(340.0, (mon_h - 60.0).max(380.0))
             } else {
-                window_height_for(estimate_rows(&result, (w - 90.0).max(120.0)), true, mon_h)
+                { let (rows, line_h) = wrapped_rows(ctx, &result, (w - 90.0).max(120.0), self.layout_keep);
+                window_height_for(rows, line_h, mon_h) }
             };
             if h > 0.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -2197,11 +2204,11 @@ impl eframe::App for ScantoutApp {
         if self.auto_resize {
             let w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width())).unwrap_or(0.0);
             if w > 120.0 && !self.text.trim().is_empty() {
-                let rows = estimate_rows(&self.text, (w - 90.0).max(100.0));
+                let (rows, line_h) = wrapped_rows(ui.ctx(), &self.text, (w - 90.0).max(100.0), self.layout_keep);
                 if rows != self.resize_rows {
                     self.resize_rows = rows;
                     let mon_h = ctx.input(|i| i.raw.screen_rect.map(|r| r.height())).unwrap_or(940.0);
-                    let want = window_height_for(rows, self.capture.is_some(), mon_h);
+                    let want = window_height_for(rows, line_h, mon_h);
                     let cur_h = ctx.input(|i| i.viewport().inner_rect.map(|r| r.height())).unwrap_or(want);
                     if (want - cur_h).abs() > 24.0 {
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, want)));
@@ -2259,9 +2266,9 @@ impl eframe::App for ScantoutApp {
             ui.vertical(|ui| {
                 let avail_w = ui.available_width();
                 let avail_h = ui.available_height().max(120.0);
-                // lignes nécessaires pour remplir la hauteur visible, ou tout le texte si plus long
-                let viewport_rows = ((avail_h - 8.0) / 18.0).floor().max(1.0) as usize;
-                let edit_rows = estimate_rows(&self.text, avail_w).max(viewport_rows).clamp(8, 400);
+                let (content_rows, line_h) = wrapped_rows(ui.ctx(), &self.text, (avail_w - 16.0).max(40.0), self.layout_keep);
+                let viewport_rows = ((avail_h - 8.0) / line_h).floor().max(1.0) as usize;
+                let edit_rows = content_rows.max(viewport_rows).clamp(4, 400);
                 egui::ScrollArea::vertical().max_height(avail_h).show(ui, |ui| {
                     let mut edit = egui::TextEdit::multiline(&mut self.text)
                         .desired_width(ui.available_width())
