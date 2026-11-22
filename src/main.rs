@@ -86,6 +86,7 @@ fn main() -> eframe::Result<()> {
     let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, cfg.auto_resize, None);
     let opt_barcode = CheckMenuItem::with_id("opt_barcode", "Décoder les codes-barres (QR, DataMatrix…)", true, cfg.decode_barcodes, None);
     let opt_top = CheckMenuItem::with_id("opt_top", "Toujours au premier plan", true, cfg.always_on_top, None);
+    let opt_layout = CheckMenuItem::with_id("opt_layout", "Conserver la mise en page", true, cfg.layout_keep, None);
     let opt_trad = CheckMenuItem::with_id("opt_trad", "Traduction (Argos, hors-ligne)", true, cfg.trad_enabled, None);
     let mut trad_lang_items: Vec<(String, CheckMenuItem)> = Vec::new();
     let trad_langs_sub = Submenu::with_id("trad_langs", "Langues proposées", true);
@@ -100,7 +101,7 @@ fn main() -> eframe::Result<()> {
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, cfg.ocr_lang == "zh", None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, cfg.ocr_lang == "ko", None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &opt_top, &PredefinedMenuItem::separator(), &opt_trad, &trad_langs_sub, &trad_dl, &trad_pip, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &opt_top, &opt_layout, &PredefinedMenuItem::separator(), &opt_trad, &trad_langs_sub, &trad_dl, &trad_pip, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
@@ -110,6 +111,7 @@ fn main() -> eframe::Result<()> {
         resize: opt_resize.clone(),
         barcode: opt_barcode.clone(),
         top: opt_top.clone(),
+        layout: opt_layout.clone(),
         trad: opt_trad.clone(),
         trad_langs: trad_lang_items.clone(),
         latin: lang_latin.clone(),
@@ -188,6 +190,7 @@ fn main() -> eframe::Result<()> {
                 auto_resize: cfg.auto_resize,
                 decode_barcodes: cfg.decode_barcodes,
                 always_on_top: cfg.always_on_top,
+                layout_keep: cfg.layout_keep,
                 top_init: true,
                 mini: false,
                 mini_since: None,
@@ -696,6 +699,7 @@ struct AppConfig {
     ocr_lang: String,
     decode_barcodes: bool,
     always_on_top: bool,
+    layout_keep: bool,
     win_x: Option<i32>,
     win_y: Option<i32>,
     win_w: Option<f32>,
@@ -737,6 +741,7 @@ fn load_config() -> AppConfig {
         ocr_lang: "latin".to_string(),
         decode_barcodes: true,
         always_on_top: true,
+        layout_keep: false,
         win_x: None,
         win_y: None,
         win_w: None,
@@ -764,6 +769,7 @@ fn load_config() -> AppConfig {
                 "auto_resize" => cfg.auto_resize = parse_bool(v),
                 "decode_barcodes" => cfg.decode_barcodes = parse_bool(v),
                 "always_on_top" => cfg.always_on_top = parse_bool(v),
+                "layout_keep" => cfg.layout_keep = parse_bool(v),
                 "win_x" => cfg.win_x = v.parse::<i32>().ok(),
                 "win_y" => cfg.win_y = v.parse::<i32>().ok(),
                 "win_w" => cfg.win_w = v.parse::<f32>().ok(),
@@ -782,7 +788,7 @@ fn load_config() -> AppConfig {
 
 fn save_config(cfg: &AppConfig) {
     let body = format!(
-        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\ntrad_enabled={}\ntrad_langs={}\ntrad_source={}\nshow_welcome={}\n",
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\ntrad_enabled={}\ntrad_langs={}\ntrad_source={}\nshow_welcome={}\nlayout_keep={}\n",
         cfg.hotkey,
         cfg.start_mini as u8,
         cfg.auto_copy as u8,
@@ -800,6 +806,7 @@ fn save_config(cfg: &AppConfig) {
         cfg.trad_langs.join(","),
         cfg.trad_source,
         cfg.show_welcome as u8,
+        cfg.layout_keep as u8,
     );
     if let Err(e) = std::fs::write(config_path(), &body) {
         dbg_log(&format!("save_config FAILED: {e} (path: {})", config_path().display()));
@@ -891,6 +898,7 @@ struct TrayOptions {
     autostart: CheckMenuItem,
     barcode: CheckMenuItem,
     top: CheckMenuItem,
+    layout: CheckMenuItem,
     trad: CheckMenuItem,
     trad_langs: Vec<(String, CheckMenuItem)>,
 }
@@ -918,6 +926,7 @@ struct ScantoutApp {
     auto_resize: bool,
     decode_barcodes: bool,
     always_on_top: bool,
+    layout_keep: bool,
     top_init: bool,
     mini: bool,
     mini_since: Option<std::time::Instant>,
@@ -1021,7 +1030,7 @@ impl ScantoutApp {
                         }
                     }
                     if let Some(engine) = &self.ocr_engine {
-                        match engine.recognize(&dynimg) {
+                        match engine.recognize(&dynimg, self.layout_keep) {
                             Ok(text) => {
                                 let text = text.trim().to_string();
                                 let composed = match &barcode_hit {
@@ -1107,6 +1116,7 @@ impl ScantoutApp {
             auto_resize: self.auto_resize,
             decode_barcodes: self.decode_barcodes,
             always_on_top: self.always_on_top,
+            layout_keep: self.layout_keep,
             ocr_lang: ocr_lang_key(&self.ocr_lang).to_string(),
             win_x: self.win_pos.map(|p| p[0]),
             win_y: self.win_pos.map(|p| p[1]),
@@ -1271,6 +1281,11 @@ impl ScantoutApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal }));
                     self.save_cfg();
                 }
+                "opt_layout" => {
+                    self.layout_keep = !self.layout_keep;
+                    self.tray_opts.layout.set_checked(self.layout_keep);
+                    self.save_cfg();
+                }
                 "opt_light" => {
                     self.light_mode = !self.light_mode;
                     self.tray_opts.light.set_checked(self.light_mode);
@@ -1335,6 +1350,7 @@ impl ScantoutApp {
         if ui.checkbox(&mut self.light_mode, "Thème clair").changed() { self.tray_opts.light.set_checked(self.light_mode); self.save_cfg(); }
         if ui.checkbox(&mut self.always_on_top, "Toujours au premier plan").changed() { self.tray_opts.top.set_checked(self.always_on_top); ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal })); self.save_cfg(); }
         if ui.checkbox(&mut self.decode_barcodes, "Décoder les codes-barres").changed() { self.tray_opts.barcode.set_checked(self.decode_barcodes); self.save_cfg(); }
+        if ui.checkbox(&mut self.layout_keep, "Conserver la mise en page").changed() { self.tray_opts.layout.set_checked(self.layout_keep); self.save_cfg(); }
         if ui.checkbox(&mut self.auto_resize, "Adapter la fenêtre à la capture").changed() { self.tray_opts.resize.set_checked(self.auto_resize); self.save_cfg(); }
         if ui.checkbox(&mut self.start_mini, "Réduire au lancement").changed() { self.tray_opts.start_mini.set_checked(self.start_mini); self.save_cfg(); }
         let mut autostart = self.tray_opts.autostart.is_checked();
@@ -2009,10 +2025,14 @@ impl eframe::App for ScantoutApp {
             }
             ui.vertical(|ui| {
                 egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.text)
+                    let mut edit = egui::TextEdit::multiline(&mut self.text)
                         .desired_width(ui.available_width())
                         .desired_rows(10)
-                        .hint_text("Le texte capturé apparaîtra ici…"));
+                        .hint_text("Le texte capturé apparaîtra ici…");
+                    if self.layout_keep {
+                        edit = edit.font(egui::TextStyle::Monospace);
+                    }
+                    ui.add(edit);
                 });
             });
         });

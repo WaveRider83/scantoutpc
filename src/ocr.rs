@@ -70,7 +70,7 @@ impl OcrEngine {
         self.lang
     }
 
-    pub fn recognize(&self, image: &DynamicImage) -> Result<String, String> {
+    pub fn recognize(&self, image: &DynamicImage, layout: bool) -> Result<String, String> {
         // Upscale des petites captures : le modele rec lit mieux les lignes >= ~40 px de haut
         let mut rgb = image.to_rgb8();
         let h = rgb.height();
@@ -86,7 +86,7 @@ impl OcrEngine {
         // Le moteur rend des *régions*, pas des lignes : une même ligne visuelle
         // peut être découpée en plusieurs boîtes. On regroupe par chevauchement
         // vertical (> 50 % de la hauteur min, comme le détecteur), triées par x.
-        let mut regs: Vec<(f32, f32, f32, String)> = results
+        let mut regs: Vec<(f32, f32, f32, f32, String)> = results
             .into_iter()
             .flat_map(|r| r.text_regions.into_iter())
             .filter_map(|r| {
@@ -95,18 +95,19 @@ impl OcrEngine {
                         r.bounding_box.y_min(),
                         r.bounding_box.y_max(),
                         r.bounding_box.x_min(),
+                        r.bounding_box.x_max(),
                         t.to_string(),
                     )
                 })
             })
             .collect();
         regs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let mut lines: Vec<(f32, f32, Vec<(f32, String)>)> = Vec::new(); // (y_min, y_max, fragments)
-        for (y0, y1, x, text) in regs {
+        let mut lines: Vec<OcrLine> = Vec::new();
+        for (y0, y1, x0, x1, text) in regs {
             let mut placement = None;
             for (i, line) in lines.iter().enumerate() {
-                let overlap = line.1.min(y1) - line.0.max(y0);
-                let min_h = (line.1 - line.0).min(y1 - y0);
+                let overlap = line.y1.min(y1) - line.y0.max(y0);
+                let min_h = (line.y1 - line.y0).min(y1 - y0);
                 if min_h > 0.0 && overlap / min_h > 0.5 {
                     placement = Some(i);
                     break;
@@ -114,25 +115,123 @@ impl OcrEngine {
             }
             match placement {
                 Some(i) => {
-                    let line = &mut lines[i];
-                    line.2.push((x, text));
-                    line.0 = line.0.min(y0);
-                    line.1 = line.1.max(y1);
+                    let l = &mut lines[i];
+                    l.frags.push((x0, x1, text));
+                    l.y0 = l.y0.min(y0);
+                    l.y1 = l.y1.max(y1);
                 }
-                None => lines.push((y0, y1, vec![(x, text)])),
+                None => lines.push(OcrLine { y0, y1, frags: vec![(x0, x1, text)] }),
             }
         }
-        lines.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let text = lines
-            .into_iter()
-            .map(|(_, _, mut parts)| {
-                parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-                postprocess_line(parts.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join(" "))
+        for l in lines.iter_mut() {
+            l.frags.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        }
+        lines.sort_by(|a, b| a.y0.partial_cmp(&b.y0).unwrap_or(std::cmp::Ordering::Equal));
+        let text = if layout {
+            layout_text(&lines)
+        } else {
+            lines
+                .into_iter()
+                .map(|l| {
+                    postprocess_line(
+                        l.frags.into_iter().map(|(_, _, t)| t).collect::<Vec<_>>().join(" "),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(text)
+    }
+}
+
+struct OcrLine {
+    y0: f32,
+    y1: f32,
+    /// (x_min, x_max, texte)
+    frags: Vec<(f32, f32, String)>,
+}
+
+/// Reconstruit la disposition : grille monospace alignee, ou tableau TSV
+/// si des colonnes recurrentes sont detectees.
+fn layout_text(lines: &[OcrLine]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let total_w: f32 = lines.iter().flat_map(|l| l.frags.iter()).map(|f| (f.1 - f.0).max(0.0)).sum();
+    let total_c: usize = lines.iter().flat_map(|l| l.frags.iter()).map(|f| f.2.chars().count()).filter(|&c| c > 0).sum();
+    let cw = if total_c > 0 { (total_w / total_c as f32).max(1.0) } else { 8.0 };
+    let min_x = lines.iter().flat_map(|l| l.frags.iter().map(|f| f.0)).fold(f32::INFINITY, f32::min);
+
+    let mut xs: Vec<f32> = lines.iter().flat_map(|l| l.frags.iter().map(|f| f.0)).collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut clusters: Vec<f32> = Vec::new();
+    for x in xs {
+        match clusters.last_mut() {
+            Some(c) if x - *c <= cw * 1.5 => *c = (*c + x) / 2.0,
+            _ => clusters.push(x),
+        }
+    }
+    let assign = |x: f32| -> Option<usize> {
+        let mut best = None;
+        let mut bd = f32::INFINITY;
+        for (i, c) in clusters.iter().enumerate() {
+            let d = (x - *c).abs();
+            if d < bd {
+                bd = d;
+                best = Some(i);
+            }
+        }
+        if bd <= cw * 1.5 { best } else { None }
+    };
+    let is_table = clusters.len() >= 2
+        && lines.len() >= 3
+        && lines.iter().all(|l| {
+            if l.frags.len() < 2 {
+                return false;
+            }
+            let mut used = std::collections::HashSet::new();
+            l.frags.iter().all(|f| assign(f.0).map(|i| used.insert(i)).unwrap_or(false))
+        });
+    if is_table {
+        return lines
+            .iter()
+            .map(|l| {
+                let mut cells = vec![String::new(); clusters.len()];
+                for (x, _, t) in &l.frags {
+                    let i = assign(*x).unwrap_or(0);
+                    let cell = &mut cells[i];
+                    if !cell.is_empty() {
+                        cell.push(' ');
+                    }
+                    cell.push_str(postprocess_line(t.clone()).trim());
+                }
+                cells.join("\t").trim_end_matches(|c: char| c == '\t' || c == ' ').to_string()
             })
             .collect::<Vec<_>>()
             .join("\n");
-        Ok(text)
     }
+    lines
+        .iter()
+        .map(|l| {
+            let mut out = String::new();
+            let mut col = 0usize;
+            for (x0, _, t) in &l.frags {
+                let start = (((*x0 - min_x) / cw).round() as i64).max(0) as usize;
+                if start > col {
+                    for _ in col..start {
+                        out.push(' ');
+                    }
+                } else if !out.is_empty() {
+                    out.push(' ');
+                }
+                let t = postprocess_line(t.clone());
+                col = start.max(col) + t.chars().count();
+                out.push_str(&t);
+            }
+            out.trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Complete la post-edition d'une ligne OCR : espaces que le modele ne peut pas deviner.
