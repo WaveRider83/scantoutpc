@@ -1364,9 +1364,7 @@ impl ScantoutApp {
         {
             let painter = ui.painter();
             painter.rect_filled(rect, 0.0, bar_bg);
-            // liseré accentué en bas de la barre
             painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(2.0, egui::Color32::from_rgb(245, 130, 55)));
-            let _ = line;
         }
         if bar.drag_started() {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -1384,37 +1382,42 @@ impl ScantoutApp {
                 self.title_icon = Some(ui.ctx().load_texture("title-icon", color, egui::TextureOptions::LINEAR));
             }
         }
-        // zone gauche : icône + nom + version + menu
+        // zone gauche : icône + nom de l'app (= ouvrant le menu)
         if self.title_icon.is_some() {
             let r = egui::Rect::from_min_size(egui::pos2(rect.left() + 12.0, rect.center().y - 10.0), egui::vec2(20.0, 20.0));
             ui.painter().image(self.title_icon.as_ref().unwrap().id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
+        let left_w = (full_w - 3.0 * 46.0 - 190.0).clamp(120.0, 320.0);
         let mut left = ui.new_child(egui::UiBuilder::new()
-            .max_rect(egui::Rect::from_min_max(egui::pos2(rect.left() + 40.0, rect.top()), egui::pos2(rect.left() + 320.0, rect.bottom())))
+            .max_rect(egui::Rect::from_min_max(egui::pos2(rect.left() + 40.0, rect.top()), egui::pos2(rect.left() + 40.0 + left_w, rect.bottom())))
             .layout(egui::Layout::left_to_right(egui::Align::Center)));
-        left.label(egui::RichText::new("ScantoutPC").strong().size(13.5).color(fg));
-        left.add_space(6.0);
-        left.menu_button(egui::RichText::new("☰  Menu").strong(), |ui| self.menu_contents(ui, ctx));
-        // zone droite : À propos + boutons fenêtre
+        left.menu_button(egui::RichText::new("ScantoutPC  ▾").strong().size(13.5).color(fg), |ui| self.menu_contents(ui, ctx))
+            .on_hover_text("Menu");
+        // zone droite : À propos + version (adaptative), puis boutons fenêtre
         let btn = 46.0;
-        let right_w = btn * 3.0 + 120.0;
-        let mut right = ui.new_child(egui::UiBuilder::new()
-            .max_rect(egui::Rect::from_min_max(egui::pos2(rect.right() - right_w, rect.top()), egui::pos2(rect.right() - 3.0 * btn, rect.bottom())))
-            .layout(egui::Layout::right_to_left(egui::Align::Center)));
-        // version (extrême droite, à côté des boutons fenêtre)
-        right.label(egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(10.0).color(muted));
-        right.add_space(8.0);
-        // boutons fenêtre dessinés à la main (à droite)
+        let show_about = full_w >= 460.0;
+        let show_version = full_w >= 380.0;
+        let mut right_w = 0.0;
+        if show_about { right_w += 96.0; }
+        if show_version { right_w += 52.0; }
+        if right_w > 0.0 {
+            let mut right = ui.new_child(egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(egui::pos2(rect.right() - 3.0 * btn - right_w, rect.top()), egui::pos2(rect.right() - 3.0 * btn, rect.bottom())))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)));
+            if show_version {
+                right.label(egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(10.0).color(muted));
+                if show_about { right.add_space(8.0); }
+            }
+            if show_about {
+                if right.add(egui::Button::new(egui::RichText::new("À propos").size(11.0).color(fg)).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, line)).corner_radius(4.0)).clicked() {
+                    self.handle_menu_event("about", ctx);
+                }
+            }
+        }
+        // min / max / close (positionnés depuis le bord droit)
         let close_r = egui::Rect::from_min_size(egui::pos2(rect.right() - btn, rect.top()), egui::vec2(btn, bar_h));
         let max_r = close_r.translate(egui::vec2(-btn, 0.0));
         let min_r = max_r.translate(egui::vec2(-btn, 0.0));
-        right.vertical_centered(|ui| {
-            ui.add_space(6.0);
-            if ui.add(egui::Button::new(egui::RichText::new("À propos").size(11.0).color(fg)).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, line)).corner_radius(4.0)).clicked() {
-                self.handle_menu_event("about", ctx);
-            }
-        });
-        // min / max / close
         let min_resp = ui.interact(min_r, ui.scope_id().with("tb-min"), egui::Sense::click());
         if min_resp.hovered() { ui.painter().rect_filled(min_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
         {
@@ -1437,7 +1440,6 @@ impl ScantoutApp {
             }
         }
         if max_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized)); }
-        let close_r = close_r;
         let close_resp = ui.interact(close_r, ui.scope_id().with("tb-close"), egui::Sense::click());
         let close_hover = close_resp.hovered();
         if close_hover { ui.painter().rect_filled(close_r, 0.0, egui::Color32::from_rgb(232, 17, 35)); }
