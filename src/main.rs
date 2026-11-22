@@ -2210,11 +2210,70 @@ impl eframe::App for ScantoutApp {
             }
         }
         let trad_source_before = self.trad_source.clone();
-        // Bas de fenêtre épinglé d'abord : la zone de texte prend toute la hauteur restante
-        egui::Panel::bottom("bottom_chrome")
-            .frame(egui::Frame::NONE)
-            .show_separator_line(false)
-            .show(ui, |ui| {
+        // Hauteur exacte allouée à la zone texte ; le pied (aperçu + historique + barre) suit en flux
+        let avail_total = ui.available_height();
+        let foot_h = if self.capture.is_some() { 176.0 } else { 0.0 } + 30.0 + 54.0 + if self.trad_result.is_some() { 70.0 } else { 0.0 };
+        let text_h = (avail_total - foot_h).max(140.0);
+
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), text_h),
+            egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            if self.trad_enabled {
+                ui.vertical(|ui| {
+                    egui::ComboBox::from_id_salt("trad_src")
+                        .width(52.0)
+                        .selected_text(self.trad_source.to_uppercase())
+                        .show_ui(ui, |ui| {
+                            for (code, name) in translate::LANGS {
+                                ui.selectable_value(&mut self.trad_source, code.to_string(), format!("{code} — {name}"));
+                            }
+                        });
+                    ui.add_space(2.0);
+                    let langs = self.trad_langs.clone();
+                    for code in &langs {
+                        if flag_button(ui, code).clicked() {
+                            let target = code.clone();
+                            let text = self.text.trim().to_string();
+                            if text.is_empty() {
+                                self.status = "rien à traduire".into();
+                            } else if target == self.trad_source {
+                                self.status = "langue source = langue cible".into();
+                            } else if self.trad_rx.is_none() {
+                                let (tx, rx) = std::sync::mpsc::channel();
+                                let from = self.trad_source.clone();
+                                std::thread::spawn(move || {
+                                    let res = translate::translate(&text, &from, &target);
+                                    let _ = tx.send(TradEvent::Translated(target, res));
+                                });
+                                self.trad_rx = Some(rx);
+                                self.trad_busy = true;
+                                self.status = "traduction…".into();
+                            }
+                        }
+                        ui.add_space(2.0);
+                    }
+                    if self.trad_busy {
+                        ui.add(egui::Spinner::new().size(18.0));
+                    }
+                });
+            }
+            ui.vertical(|ui| {
+                let avail_w = ui.available_width();
+                let avail_h = ui.available_height().max(120.0);
+                // lignes nécessaires pour remplir la hauteur visible, ou tout le texte si plus long
+                let viewport_rows = ((avail_h - 8.0) / 18.0).floor().max(1.0) as usize;
+                let edit_rows = estimate_rows(&self.text, avail_w).max(viewport_rows).clamp(8, 400);
+                egui::ScrollArea::vertical().max_height(avail_h).show(ui, |ui| {
+                    let mut edit = egui::TextEdit::multiline(&mut self.text)
+                        .desired_width(ui.available_width())
+                        .desired_rows(edit_rows)
+                        .hint_text("Le texte capturé apparaîtra ici…");
+                    if self.layout_keep {
+                        edit = edit.font(egui::TextStyle::Monospace);
+                    }
+                    ui.add(edit);
+                });
+            });
+        });
         if let Some((target, translated)) = self.trad_result.clone() {
             ui.add_space(4.0);
             let mut close = false;
@@ -2375,65 +2434,6 @@ impl eframe::App for ScantoutApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(&self.status).small().color(egui::Color32::GRAY));
-            });
-        });
-            });
-        ui.horizontal(|ui| {
-            if self.trad_enabled {
-                ui.vertical(|ui| {
-                    egui::ComboBox::from_id_salt("trad_src")
-                        .width(52.0)
-                        .selected_text(self.trad_source.to_uppercase())
-                        .show_ui(ui, |ui| {
-                            for (code, name) in translate::LANGS {
-                                ui.selectable_value(&mut self.trad_source, code.to_string(), format!("{code} — {name}"));
-                            }
-                        });
-                    ui.add_space(2.0);
-                    let langs = self.trad_langs.clone();
-                    for code in &langs {
-                        if flag_button(ui, code).clicked() {
-                            let target = code.clone();
-                            let text = self.text.trim().to_string();
-                            if text.is_empty() {
-                                self.status = "rien à traduire".into();
-                            } else if target == self.trad_source {
-                                self.status = "langue source = langue cible".into();
-                            } else if self.trad_rx.is_none() {
-                                let (tx, rx) = std::sync::mpsc::channel();
-                                let from = self.trad_source.clone();
-                                std::thread::spawn(move || {
-                                    let res = translate::translate(&text, &from, &target);
-                                    let _ = tx.send(TradEvent::Translated(target, res));
-                                });
-                                self.trad_rx = Some(rx);
-                                self.trad_busy = true;
-                                self.status = "traduction…".into();
-                            }
-                        }
-                        ui.add_space(2.0);
-                    }
-                    if self.trad_busy {
-                        ui.add(egui::Spinner::new().size(18.0));
-                    }
-                });
-            }
-            ui.vertical(|ui| {
-                let avail_w = ui.available_width();
-                let avail_h = ui.available_height().max(120.0);
-                // lignes nécessaires pour remplir la hauteur visible, ou tout le texte si plus long
-                let viewport_rows = ((avail_h - 8.0) / 18.0).floor().max(1.0) as usize;
-                let edit_rows = estimate_rows(&self.text, avail_w).max(viewport_rows).clamp(8, 400);
-                egui::ScrollArea::vertical().max_height(avail_h).show(ui, |ui| {
-                    let mut edit = egui::TextEdit::multiline(&mut self.text)
-                        .desired_width(ui.available_width())
-                        .desired_rows(edit_rows)
-                        .hint_text("Le texte capturé apparaîtra ici…");
-                    if self.layout_keep {
-                        edit = edit.font(egui::TextStyle::Monospace);
-                    }
-                    ui.add(edit);
-                });
             });
         });
         if self.trad_source != trad_source_before {
