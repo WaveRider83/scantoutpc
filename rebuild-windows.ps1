@@ -4,14 +4,14 @@ $ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 $log = Join-Path $PSScriptRoot "build-latest.log"
 
-"=== build $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Tee-Object -FilePath $log
+"=== build $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | ForEach-Object { $_; Set-Content -Path $log -Value $_ -Encoding utf8 }
 
 $proc = Get-Process -Name scantoutpc -ErrorAction SilentlyContinue
-if ($proc) { "Fermeture de ScantoutPC..." | Tee-Object -FilePath $log -Append; $proc | Stop-Process -Force; Start-Sleep -Seconds 1 }
+if ($proc) { "Fermeture de ScantoutPC..." | ForEach-Object { $_; Add-Content -Path $log -Value $_ -Encoding utf8 }; $proc | Stop-Process -Force; Start-Sleep -Seconds 1 }
 
-cargo build --release --features debuglog 2>&1 | Tee-Object -FilePath $log -Append
+cargo build --release --features debuglog 2>&1 | ForEach-Object { $_; Add-Content -Path $log -Value $_ -Encoding utf8 }
 if ($LASTEXITCODE -ne 0) {
-    "BUILD ECHEC (code $LASTEXITCODE)" | Tee-Object -FilePath $log -Append
+    "BUILD ECHEC (code $LASTEXITCODE)" | ForEach-Object { $_; Add-Content -Path $log -Value $_ -Encoding utf8 }
     exit $LASTEXITCODE
 }
 
@@ -21,8 +21,8 @@ $dst = Join-Path $PSScriptRoot "target\release\models"
 if (Test-Path $models) {
   New-Item -ItemType Directory -Force $dst | Out-Null
   Copy-Item -Force (Join-Path $models "*") $dst
-  "Modeles OCR copies dans $dst" | Tee-Object -FilePath $log -Append
-} else { "AVERTISSEMENT: dossier models absent" | Tee-Object -FilePath $log -Append }
+  "Modeles OCR copies dans $dst" | ForEach-Object { $_; Add-Content -Path $log -Value $_ -Encoding utf8 }
+} else { "AVERTISSEMENT: dossier models absent" | ForEach-Object { $_; Add-Content -Path $log -Value $_ -Encoding utf8 } }
 
-"BUILD OK" | Tee-Object -FilePath $log -Append
+"BUILD OK" | ForEach-Object { $_; Add-Content -Path $log -Value $_ -Encoding utf8 }
 Start-Process (Join-Path $PSScriptRoot "target\release\scantoutpc.exe")
