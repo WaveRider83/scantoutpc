@@ -1644,9 +1644,8 @@ impl eframe::App for ScantoutApp {
             }
         }
         if self.show_welcome {
-            let mut open = true;
+            let mut dismissed = false;
             egui::Window::new("Bienvenue dans ScantoutPC")
-                .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1662,9 +1661,9 @@ impl eframe::App for ScantoutApp {
                     ui.add_space(8.0);
                     ui.checkbox(&mut self.welcome_dont_show, "Ne plus afficher ce message");
                     ui.add_space(4.0);
-                    if ui.button("Compris !").clicked() { open = false; }
+                    if ui.button("Compris !").clicked() { dismissed = true; }
                 });
-            if !open {
+            if dismissed {
                 self.show_welcome = false;
                 if self.welcome_dont_show { self.save_cfg(); }
             }
