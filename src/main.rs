@@ -1141,22 +1141,28 @@ impl ScantoutApp {
                 }
             }
         }
-        // Hauteur adaptée à la longueur du texte OCR ; largeur selon l'option « Adapter la fenêtre »
+        // Option « Adapter la fenêtre » : la fenêtre GRANDIT (jamais réduite ici) pour épouser la capture.
+        // Largeur ∝ largeur de l'image capturée ; hauteur ∝ lignes OCR (ou hauteur image si pas de texte).
         if show_texture {
             let pp = ctx.pixels_per_point();
-            let cur_w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width())).unwrap_or(460.0);
+            let (cur_w, cur_h) = ctx.input(|i| i.viewport().inner_rect.map(|r| (r.width(), r.height())).unwrap_or((460.0, 360.0)));
             let (mon_w, mon_h) = ctx.input(|i| i.raw.screen_rect.map(|r| (r.width(), r.height())).unwrap_or((1920.0, 940.0)));
-            let w = if self.auto_resize { (size[0] as f32 / pp + 28.0).clamp(400.0, (mon_w - 40.0).max(400.0)) } else { cur_w };
-            let h = if result.is_empty() {
-                (size[1] as f32 / pp + 240.0).clamp(340.0, (mon_h - 60.0).max(380.0))
+            let img_w = size[0] as f32 / pp;
+            let img_h = size[1] as f32 / pp;
+            let want_w = if self.auto_resize { (img_w + 28.0).clamp(400.0, (mon_w - 40.0).max(400.0)) } else { cur_w };
+            let h_text = if result.is_empty() {
+                (img_h + 240.0).min((mon_h - 60.0).max(380.0))
             } else {
-                { let (rows, line_h) = wrapped_rows(ctx, &result, (w - 90.0).max(120.0), self.layout_keep);
-                window_height_for(rows, line_h, mon_h) }
+                let (rows, line_h) = wrapped_rows(ctx, &result, (want_w - 90.0).max(120.0), self.layout_keep);
+                window_height_for(rows, line_h, mon_h)
             };
-            if h > 0.0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
-                dbg_log(&format!("auto-resize texte → {w}x{h}"));
+            let want_w = if self.auto_resize { want_w.max(cur_w) } else { cur_w };
+            let want_h = if self.auto_resize { h_text.max(cur_h).min((mon_h - 40.0).max(380.0)) } else { h_text };
+            dbg_log(&format!("auto-resize capture: img={}x{} pp={pp} cur={cur_w}x{cur_h} -> want={want_w}x{want_h} (auto_resize={})", size[0], size[1], self.auto_resize));
+            if (want_w - cur_w).abs() > 1.0 || (want_h - cur_h).abs() > 1.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(want_w, want_h)));
             }
+            self.resize_rows = 0; // force le live-resize à resynchroniser la hauteur au prochain texte
         }
         result
     }
