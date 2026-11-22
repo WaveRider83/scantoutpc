@@ -1118,6 +1118,20 @@ impl ScantoutApp {
         });
     }
 
+    fn cancel_pick(&mut self) {
+        self.picking = false;
+        self.pick_at = None;
+        self.overlay_shots = None;
+        self.pending_capture = None;
+        self.drag_start = None;
+        self.drag_now = None;
+        self.drag_screen = None;
+    }
+
+    fn can_hide(&self) -> bool {
+        !self.picking && self.overlay_shots.is_none()
+    }
+
     fn toggle_main(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         dbg_log(&format!("tray toggle: mini={} main_visible={} minimized={}", self.mini, self.main_visible, minimized));
@@ -1129,6 +1143,10 @@ impl ScantoutApp {
             return;
         }
         if self.main_visible {
+            if !self.can_hide() {
+                dbg_log("tray toggle: masquage refuse (capture en cours)");
+                return;
+            }
             self.main_visible = false;
             self.show_about = false;
             self.save_cfg();
@@ -1288,6 +1306,7 @@ impl ScantoutApp {
     }
 
     fn request_close(&mut self, ctx: &egui::Context) {
+        self.cancel_pick();
         if self.mini {
             self.mini_since = None;
             self.mini_collapsing = None;
@@ -1614,13 +1633,22 @@ impl eframe::App for ScantoutApp {
         if self.mini && !self.picking && self.auto_capture_at.is_none() && self.mini_collapsing.is_none() {
             if let Some(t0) = self.mini_since {
                 if t0.elapsed() >= std::time::Duration::from_secs(3) {
-                    self.mini_collapsing = Some(std::time::Instant::now());
+                    if !self.can_hide() {
+                        self.mini_since = Some(std::time::Instant::now()); // report tant que la capture est active
+                    } else {
+                        self.mini_collapsing = Some(std::time::Instant::now());
                     dbg_log("mini collapse start");
                     self.picking = false;
                     self.overlay_shots = None;
                     self.pending_capture = None;
+                    }
                 }
             }
+        }
+        if self.mini_collapsing.is_some() && self.picking {
+            self.mini_collapsing = None;
+            self.mini_since = Some(std::time::Instant::now());
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
         }
         if let Some(t0) = self.mini_collapsing {
             let p = (t0.elapsed().as_secs_f32() / 0.25).min(1.0);
@@ -1670,6 +1698,7 @@ impl eframe::App for ScantoutApp {
         if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
             if event.state == global_hotkey::HotKeyState::Pressed {
                 if self.recording { return; }
+                if self.picking { dbg_log("hotkey ignore: picking en cours"); return; }
                 dbg_log("hotkey pressed");
                 // La selection de zone passe par des overlays egui enfants de la fenetre principale :
                 // elle DOIT etre visible, sinon egui panique ("user callback was never called").
