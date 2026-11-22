@@ -90,7 +90,7 @@ impl OcrEngine {
             .into_iter()
             .flat_map(|r| r.text_regions.into_iter())
             .filter_map(|r| {
-                r.text.map(|t| {
+                r.text.filter(|t| !t.trim().is_empty()).map(|t| {
                     (
                         r.bounding_box.y_min(),
                         r.bounding_box.y_max(),
@@ -157,67 +157,97 @@ fn layout_text(lines: &[OcrLine]) -> String {
     if lines.is_empty() {
         return String::new();
     }
-    let total_w: f32 = lines.iter().flat_map(|l| l.frags.iter()).map(|f| (f.1 - f.0).max(0.0)).sum();
-    let total_c: usize = lines.iter().flat_map(|l| l.frags.iter()).map(|f| f.2.chars().count()).filter(|&c| c > 0).sum();
-    let cw = if total_c > 0 { (total_w / total_c as f32).max(1.0) } else { 8.0 };
-    let min_x = lines.iter().flat_map(|l| l.frags.iter().map(|f| f.0)).fold(f32::INFINITY, f32::min);
+    // Largeur moyenne d'un caractere sur les fragments bruts
+    let (tot_w0, tot_c0) = lines.iter().flat_map(|l| l.frags.iter()).fold((0.0f32, 0usize), |(w, c), f| {
+        (w + (f.1 - f.0).max(0.0), c + f.2.chars().count())
+    });
+    let cw0 = if tot_c0 > 0 { (tot_w0 / tot_c0 as f32).max(1.0) } else { 8.0 };
 
-    let mut xs: Vec<f32> = lines.iter().flat_map(|l| l.frags.iter().map(|f| f.0)).collect();
+    // Fusionne les fragments voisins horizontalement (badge + texte, mots colles)
+    let merge_gap = (cw0 * 1.5).max(8.0);
+    let merged: Vec<Vec<(f32, f32, String)>> = lines
+        .iter()
+        .map(|l| {
+            let mut out: Vec<(f32, f32, String)> = Vec::with_capacity(l.frags.len());
+            for (x0, x1, t) in &l.frags {
+                match out.last_mut() {
+                    Some(last) if *x0 - last.1 <= merge_gap => {
+                        last.1 = *x1;
+                        if !last.2.is_empty() {
+                            last.2.push(' ');
+                        }
+                        last.2.push_str(t);
+                    }
+                    _ => out.push((*x0, *x1, t.clone())),
+                }
+            }
+            out
+        })
+        .collect();
+
+    let (tot_w, tot_c) = merged.iter().flat_map(|l| l.iter()).fold((0.0f32, 0usize), |(w, c), f| {
+        (w + (f.1 - f.0).max(0.0), c + f.2.chars().count())
+    });
+    let cw = if tot_c > 0 { (tot_w / tot_c as f32).max(1.0) } else { 8.0 };
+    let min_x = merged.iter().flat_map(|l| l.iter().map(|f| f.0)).fold(f32::INFINITY, f32::min);
+
+    // Clusters de colonnes : intervalles [min, max] sur les x de depart des fragments fusionnes
+    let tol = cw * 2.2;
+    let mut xs: Vec<f32> = merged.iter().flat_map(|l| l.iter().map(|f| f.0)).collect();
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mut clusters: Vec<f32> = Vec::new();
+    let mut clusters: Vec<[f32; 2]> = Vec::new();
     for x in xs {
         match clusters.last_mut() {
-            Some(c) if x - *c <= cw * 1.5 => *c = (*c + x) / 2.0,
-            _ => clusters.push(x),
+            Some(c) if x - c[1] <= tol => c[1] = x,
+            _ => clusters.push([x, x]),
+        }
+    }
+    // Supprime les clusters singletons (1 fragment) : ils creent des colonnes parasites
+    let pad = cw;
+    loop {
+        let mut support = vec![0usize; clusters.len()];
+        for l in &merged {
+            for f in l {
+                for (i, c) in clusters.iter().enumerate() {
+                    if f.0 >= c[0] - pad && f.0 <= c[1] + pad {
+                        support[i] += 1;
+                        break;
+                    }
+                }
+            }
+        }
+        let before = clusters.len();
+        clusters = clusters.into_iter().zip(support).filter(|(_, n)| *n > 1).map(|(c, _)| c).collect();
+        if clusters.len() == before {
+            break;
         }
     }
     let assign = |x: f32| -> Option<usize> {
-        let mut best = None;
-        let mut bd = f32::INFINITY;
-        for (i, c) in clusters.iter().enumerate() {
-            let d = (x - *c).abs();
-            if d < bd {
-                bd = d;
-                best = Some(i);
-            }
-        }
-        if bd <= cw * 1.5 { best } else { None }
+        clusters.iter().position(|c| x >= c[0] - pad && x <= c[1] + pad)
     };
-    // Mappabilite par ligne : tous les fragments doivent tomber sur des clusters distincts
-    let line_map: Vec<Option<Vec<usize>>> = lines
+
+    // Ligne tabulaire ? tous les fragments fusionnes assignables a un cluster
+    let line_map: Vec<Option<Vec<usize>>> = merged
         .iter()
         .map(|l| {
-            if l.frags.len() < 2 {
+            if l.len() < 2 {
                 return None;
             }
-            let mut used = std::collections::HashSet::new();
-            let mut cells = Vec::with_capacity(l.frags.len());
-            for f in &l.frags {
-                match assign(f.0) {
-                    Some(i) => {
-                        if !used.insert(i) {
-                            return None;
-                        }
-                        cells.push(i);
-                    }
-                    None => return None,
-                }
-            }
-            Some(cells)
+            l.iter().map(|f| assign(f.0)).collect::<Option<Vec<_>>>()
         })
         .collect();
-    let multi = lines.iter().filter(|l| l.frags.len() >= 2).count();
+    let multi = merged.iter().filter(|l| l.len() >= 2).count();
     let mappable = line_map.iter().flatten().count();
-    // Tableau si majorite de lignes tabulaires (et au moins 3), sinon alignement simple
     let is_table = clusters.len() >= 2 && mappable >= 3 && multi > 0 && mappable * 10 >= multi * 6;
+
     if is_table {
-        return lines
+        return merged
             .iter()
-            .enumerate()
-            .map(|(li, l)| match &line_map[li] {
+            .zip(&line_map)
+            .map(|(l, cells)| match cells {
                 Some(cells) => {
                     let mut out = vec![String::new(); clusters.len()];
-                    for (f, &ci) in l.frags.iter().zip(cells) {
+                    for (f, &ci) in l.iter().zip(cells) {
                         let cell = &mut out[ci];
                         if !cell.is_empty() {
                             cell.push(' ');
@@ -226,22 +256,17 @@ fn layout_text(lines: &[OcrLine]) -> String {
                     }
                     out.join("\t").trim_end_matches(|c: char| c == '\t' || c == ' ').to_string()
                 }
-                None => l
-                    .frags
-                    .iter()
-                    .map(|f| postprocess_line(f.2.clone()))
-                    .collect::<Vec<_>>()
-                    .join(" "),
+                None => l.iter().map(|f| postprocess_line(f.2.clone())).collect::<Vec<_>>().join(" "),
             })
             .collect::<Vec<_>>()
             .join("\n");
     }
-    lines
+    merged
         .iter()
         .map(|l| {
             let mut out = String::new();
             let mut col = 0usize;
-            for (x0, _, t) in &l.frags {
+            for (x0, _, t) in l {
                 let start = (((*x0 - min_x) / cw).round() as i64).max(0) as usize;
                 if start > col {
                     for _ in col..start {
