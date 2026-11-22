@@ -1391,8 +1391,7 @@ impl ScantoutApp {
         let mut left = ui.new_child(egui::UiBuilder::new()
             .max_rect(egui::Rect::from_min_max(egui::pos2(rect.left() + 40.0, rect.top()), egui::pos2(rect.left() + 40.0 + left_w, rect.bottom())))
             .layout(egui::Layout::left_to_right(egui::Align::Center)));
-        left.menu_button(egui::RichText::new("ScantoutPC  ▾").strong().size(13.5).color(fg), |ui| self.menu_contents(ui, ctx))
-            .on_hover_text("Menu");
+        left.menu_button(egui::RichText::new("ScantoutPC  ▾").strong().size(13.5).color(fg), |ui| self.menu_contents(ui, ctx));
         // zone droite : À propos + version (adaptative), puis boutons fenêtre
         let btn = 46.0;
         let show_about = full_w >= 460.0;
