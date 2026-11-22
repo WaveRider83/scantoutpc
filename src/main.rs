@@ -1139,12 +1139,12 @@ impl ScantoutApp {
         if show_texture {
             let pp = ctx.pixels_per_point();
             let cur_w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width())).unwrap_or(460.0);
-            let w = if self.auto_resize { (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0) } else { cur_w };
-            let mon_h = ctx.input(|i| i.raw.screen_rect.map(|r| r.height())).unwrap_or(940.0);
+            let (mon_w, mon_h) = ctx.input(|i| i.raw.screen_rect.map(|r| (r.width(), r.height())).unwrap_or((1920.0, 940.0)));
+            let w = if self.auto_resize { (size[0] as f32 / pp + 28.0).clamp(400.0, (mon_w - 40.0).max(400.0)) } else { cur_w };
             let h = if result.is_empty() {
                 (size[1] as f32 / pp + 240.0).clamp(340.0, (mon_h - 60.0).max(380.0))
             } else {
-                window_height_for(estimate_rows(&result, w), true, mon_h)
+                window_height_for(estimate_rows(&result, (w - 90.0).max(120.0)), true, mon_h)
             };
             if h > 0.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
