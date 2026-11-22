@@ -1415,7 +1415,7 @@ impl ScantoutApp {
             }
         });
         // min / max / close
-        let min_resp = ui.interact(min_r, egui::Id::new("tb-min"), egui::Sense::click());
+        let min_resp = ui.interact(min_r, ui.id().with("tb-min"), egui::Sense::click());
         if min_resp.hovered() { ui.painter().rect_filled(min_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
         {
             let c = min_r.center();
@@ -1423,7 +1423,7 @@ impl ScantoutApp {
         }
         if min_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
-        let max_resp = ui.interact(max_r, egui::Id::new("tb-max"), egui::Sense::click());
+        let max_resp = ui.interact(max_r, ui.id().with("tb-max"), egui::Sense::click());
         if max_resp.hovered() { ui.painter().rect_filled(max_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
         {
             let c = max_r.center();
@@ -1438,7 +1438,7 @@ impl ScantoutApp {
         }
         if max_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized)); }
         let close_r = close_r;
-        let close_resp = ui.interact(close_r, egui::Id::new("tb-close"), egui::Sense::click());
+        let close_resp = ui.interact(close_r, ui.id().with("tb-close"), egui::Sense::click());
         let close_hover = close_resp.hovered();
         if close_hover { ui.painter().rect_filled(close_r, 0.0, egui::Color32::from_rgb(232, 17, 35)); }
         {
@@ -1473,7 +1473,7 @@ impl ScantoutApp {
             (egui::Rect::from_min_size(egui::pos2(s.right() - c, s.bottom() - c), egui::vec2(c, c)), Dir::SouthEast, egui::CursorIcon::ResizeSouthEast),
         ];
         for (i, (r, dir, cur)) in zones.iter().enumerate() {
-            let resp = ui.interact(*r, egui::Id::new(("win-resize", i)), egui::Sense::drag());
+            let resp = ui.interact(*r, ui.id().with(("win-resize", i)), egui::Sense::drag());
             if resp.hovered() { ctx.set_cursor_icon(*cur); }
             if resp.drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(*dir)); }
         }
@@ -1957,7 +1957,7 @@ impl eframe::App for ScantoutApp {
                 self.exit_mini(ui.ctx());
             }
         } else {
-        let mut trad_request: Option<String> = None;let mut trad_request: Option<String> = None;
+        let mut trad_request: Option<String> = None;
         let trad_source_before = self.trad_source.clone();
         ui.horizontal(|ui| {
             if self.trad_enabled {
