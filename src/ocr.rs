@@ -12,14 +12,6 @@ pub enum OcrLang {
 }
 
 impl OcrLang {
-    pub const ALL: [OcrLang; 3] = [OcrLang::Latin, OcrLang::Chinese, OcrLang::Korean];
-    pub fn label(self) -> &'static str {
-        match self {
-            OcrLang::Latin => "FR / EN / latin",
-            OcrLang::Chinese => "中文 (chinois)",
-            OcrLang::Korean => "한국어 (coréen)",
-        }
-    }
     fn rec_files(self) -> (&'static str, &'static str) {
         match self {
             OcrLang::Latin => ("rec_latin.onnx", "rec_latin.dict"),

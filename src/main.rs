@@ -866,7 +866,7 @@ fn hotkey_label(hk: &HotKey) -> String {
     if hk.mods.contains(Modifiers::CONTROL) { parts.push("Ctrl".into()); }
     if hk.mods.contains(Modifiers::ALT) { parts.push("Alt".into()); }
     if hk.mods.contains(Modifiers::SHIFT) { parts.push("Maj".into()); }
-    if hk.mods.contains(Modifiers::SUPER) || hk.mods.contains(Modifiers::META) { parts.push("Win".into()); }
+    if hk.mods.contains(Modifiers::META) { parts.push("Win".into()); }
     let dbg = format!("{:?}", hk.key);
     let key = dbg.strip_prefix("Key").map(String::from)
         .or_else(|| dbg.strip_prefix("Digit").map(String::from))
