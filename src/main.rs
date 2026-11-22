@@ -2188,8 +2188,9 @@ impl eframe::App for ScantoutApp {
         } else {
         let trad_source_before = self.trad_source.clone();
         // Bas de fenêtre épinglé d'abord : la zone de texte prend toute la hauteur restante
-        egui::TopBottomPanel::bottom("bottom_chrome")
+        egui::Panel::bottom("bottom_chrome")
             .frame(egui::Frame::NONE)
+            .show_separator_line(false)
             .show_inside(ui, |ui| {
         if let Some((target, translated)) = self.trad_result.clone() {
             ui.add_space(4.0);
