@@ -6,6 +6,7 @@ use tray_icon::{TrayIconBuilder, Icon};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 mod barcode;
 mod gdi;
+mod importer;
 mod ocr;
 mod translate;
 
@@ -1003,6 +1004,124 @@ impl ScantoutApp {
         self.save_cfg();
     }
 
+    /// Pipeline commun capture / import fichier : historique, image, OCR, presse-papier.
+    /// Renvoie le texte composé (pour l'assemblage multi-pages).
+    fn process_image(&mut self, ctx: &egui::Context, img: image::RgbaImage, ts: u64, show_texture: bool) -> String {
+        if self.keep_history {
+            if let Some(d) = dump_dir() {
+                if img.save(d.join(format!("cap_{ts}.png"))).is_ok() {
+                    history_append(&d, &format!("{ts} cap cap_{ts}.png {}x{}", img.width(), img.height()));
+                    self.status = format!("historique: {}", d.display());
+                }
+            }
+        }
+        let size = [img.width() as usize, img.height() as usize];
+        if show_texture {
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
+        }
+        let reduced = self.mini || !self.main_visible || ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        if reduced && show_texture {
+            self.enter_mini(ctx);
+            self.mini_flash = true;
+        }
+        if self.auto_resize && show_texture {
+            let pp = ctx.pixels_per_point();
+            let w = (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0);
+            let h = (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0);
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+            dbg_log(&format!("auto-resize {w}x{h}"));
+        }
+        let dynimg = image::DynamicImage::ImageRgba8(img);
+        let barcode_hit = if self.decode_barcodes {
+            barcode::decode(&dynimg)
+        } else {
+            None
+        };
+        if let Some((fmt, code)) = &barcode_hit {
+            dbg_log(&format!("barcode detecte: {fmt} :: {}", &code.chars().take(80).collect::<String>()));
+        }
+        self.status = "ocr…".into();
+        let lang = self.ocr_lang;
+        let need_reload = self.ocr_engine.as_ref().map(|e| e.lang() != lang).unwrap_or(true);
+        if need_reload {
+            self.ocr_engine = None;
+            match ocr::OcrEngine::load(lang) {
+                Ok(e) => self.ocr_engine = Some(e),
+                Err(e) => { self.status = format!("modèles OCR: {e}"); }
+            }
+        }
+        let mut result = String::new();
+        if let Some(engine) = &self.ocr_engine {
+            match engine.recognize(&dynimg, self.layout_keep) {
+                Ok(text) => {
+                    let text = text.trim().to_string();
+                    let composed = match &barcode_hit {
+                        Some((fmt, code)) => {
+                            let line = format!("[{}] {}", fmt, code);
+                            if text.is_empty() { line } else { format!("{}\n{}", line, text) }
+                        }
+                        None => text,
+                    };
+                    if self.keep_history {
+                        if let Some(d) = dump_dir() {
+                            let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &composed);
+                            let preview: String = composed.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
+                            history_append(&d, &format!("{ts} ocr chars={} :: {}", composed.chars().count(), preview));
+                            if let Some((fmt, code)) = &barcode_hit {
+                                history_append(&d, &format!("{ts} barcode {fmt} :: {}", code.chars().take(120).collect::<String>()));
+                            }
+                        }
+                    }
+                    if composed.is_empty() {
+                        self.status = "aucun texte détecté".into();
+                    } else {
+                        self.text = composed.clone();
+                        self.trad_result = None;
+                        if self.auto_copy {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(composed.clone());
+                            }
+                            self.status = match &barcode_hit {
+                                Some((fmt, _)) => format!("{} détecté, copié ✓", fmt),
+                                None => "texte copié ✓".into(),
+                            };
+                        } else {
+                            self.status = match &barcode_hit {
+                                Some((fmt, _)) => format!("{} détecté", fmt),
+                                None => "texte reconnu".into(),
+                            };
+                        }
+                        result = composed;
+                    }
+                }
+                Err(e) => {
+                    if let Some((fmt, code)) = &barcode_hit {
+                        let composed = format!("[{}] {}", fmt, code);
+                        self.text = composed.clone();
+                        self.trad_result = None;
+                        if self.auto_copy {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(composed.clone());
+                            }
+                        }
+                        if self.keep_history {
+                            if let Some(d) = dump_dir() {
+                                let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &composed);
+                                history_append(&d, &format!("{ts} barcode {fmt} :: {}", code.chars().take(120).collect::<String>()));
+                            }
+                        }
+                        self.status = format!("{} détecté (OCR a échoué)", fmt);
+                        result = composed;
+                    } else {
+                        self.status = e;
+                    }
+                }
+            }
+        }
+        result
+    }
+
     fn do_capture(&mut self, ctx: &egui::Context) {
         dbg_log("do_capture start");
         match self.zone.clone() {
@@ -1010,115 +1129,7 @@ impl ScantoutApp {
                 Ok(img) => {
                     dbg_log("capture_zone ok");
                     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                    if self.keep_history {
-                        if let Some(d) = dump_dir() {
-                            if img.save(d.join(format!("cap_{ts}.png"))).is_ok() {
-                                history_append(&d, &format!("{ts} cap cap_{ts}.png {}x{}", img.width(), img.height()));
-                                self.status = format!("historique: {}", d.display());
-                            }
-                        }
-                    }
-                    let size = [img.width() as usize, img.height() as usize];
-                    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-                    self.capture = Some(ctx.load_texture("capture", color, egui::TextureOptions::LINEAR));
-                    let reduced = self.mini || !self.main_visible || ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-                    if reduced {
-                        self.enter_mini(ctx);
-                        self.mini_flash = true;
-                    }
-                    if self.auto_resize {
-                        let pp = ctx.pixels_per_point();
-                        let w = (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0);
-                        let h = (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
-                        dbg_log(&format!("auto-resize {w}x{h}"));
-                    }
-                    let dynimg = image::DynamicImage::ImageRgba8(img);
-                    let barcode_hit = if self.decode_barcodes {
-                        barcode::decode(&dynimg)
-                    } else {
-                        None
-                    };
-                    if let Some((fmt, code)) = &barcode_hit {
-                        dbg_log(&format!("barcode detecte: {fmt} :: {}", &code.chars().take(80).collect::<String>()));
-                    }
-                    self.status = "ocr…".into();
-                    let lang = self.ocr_lang;
-                    let need_reload = self.ocr_engine.as_ref().map(|e| e.lang() != lang).unwrap_or(true);
-                    if need_reload {
-                        self.ocr_engine = None;
-                        match ocr::OcrEngine::load(lang) {
-                            Ok(e) => self.ocr_engine = Some(e),
-                            Err(e) => { self.status = format!("modèles OCR: {e}"); }
-                        }
-                    }
-                    if let Some(engine) = &self.ocr_engine {
-                        match engine.recognize(&dynimg, self.layout_keep) {
-                            Ok(text) => {
-                                let text = text.trim().to_string();
-                                let composed = match &barcode_hit {
-                                    Some((fmt, code)) => {
-                                        let line = format!("[{}] {}", fmt, code);
-                                        if text.is_empty() { line } else { format!("{}\n{}", line, text) }
-                                    }
-                                    None => text,
-                                };
-                                // DEBUG TEMP : texte OCR a cote des dumps
-                                if self.keep_history {
-                                    if let Some(d) = dump_dir() {
-                                        let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &composed);
-                                        let preview: String = composed.chars().take(80).collect::<String>().replace(['\n', '\r'], " ");
-                                        history_append(&d, &format!("{ts} ocr chars={} :: {}", composed.chars().count(), preview));
-                                        if let Some((fmt, code)) = &barcode_hit {
-                                            history_append(&d, &format!("{ts} barcode {fmt} :: {}", code.chars().take(120).collect::<String>()));
-                                        }
-                                    }
-                                }
-                                if composed.is_empty() {
-                                    self.status = "aucun texte détecté".into();
-                                } else {
-                                    self.text = composed.clone();
-                                    self.trad_result = None;
-                                    if self.auto_copy {
-                                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                                            let _ = cb.set_text(composed);
-                                        }
-                                        self.status = match &barcode_hit {
-                                            Some((fmt, _)) => format!("{} détecté, copié ✓", fmt),
-                                            None => "texte copié ✓".into(),
-                                        };
-                                    } else {
-                                        self.status = match &barcode_hit {
-                                            Some((fmt, _)) => format!("{} détecté", fmt),
-                                            None => "texte reconnu".into(),
-                                        };
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                if let Some((fmt, code)) = &barcode_hit {
-                                    let composed = format!("[{}] {}", fmt, code);
-                                    self.text = composed.clone();
-                                    self.trad_result = None;
-                                    if self.auto_copy {
-                                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                                            let _ = cb.set_text(composed.clone());
-                                        }
-                                    }
-                                    if self.keep_history {
-                                        if let Some(d) = dump_dir() {
-                                            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                                            let _ = std::fs::write(d.join(format!("ocr_{ts}.txt")), &composed);
-                                            history_append(&d, &format!("{ts} barcode {fmt} :: {}", code.chars().take(120).collect::<String>()));
-                                        }
-                                    }
-                                    self.status = format!("{} détecté (OCR a échoué)", fmt);
-                                } else {
-                                    self.status = e;
-                                }
-                            }
-                        }
-                    }
+                    self.process_image(ctx, img, ts, true);
                 }
                 Err(e) => self.status = format!("capture échouée: {e}"),
             },
@@ -1127,6 +1138,46 @@ impl ScantoutApp {
         if self.mini {
             self.enter_mini(ctx);
         } // fenetre normale visible : on ne la reduit pas apres la capture
+    }
+
+    fn import_file(&mut self, ctx: &egui::Context) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Images et PDF", &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff", "ico", "pdf"])
+            .add_filter("Images", &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff", "ico"])
+            .add_filter("PDF", &["pdf"])
+            .pick_file() else { return };
+        dbg_log(&format!("import fichier: {}", path.display()));
+        match crate::importer::load_pages(&path) {
+            Ok(pages) => {
+                let base = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let total = pages.len();
+                let mut texts = Vec::with_capacity(total);
+                for (i, img) in pages.into_iter().enumerate() {
+                    // timestamp distinct par page : chaque page devient une entrée d'historique
+                    let t = self.process_image(ctx, img, base + i as u64, i == 0);
+                    if !t.is_empty() {
+                        if total > 1 {
+                            texts.push(format!("--- page {} ---\n{}", i + 1, t));
+                        } else {
+                            texts.push(t);
+                        }
+                    }
+                }
+                if total > 1 {
+                    let combined = texts.join("\n\n");
+                    if !combined.is_empty() {
+                        self.text = combined.clone();
+                        if self.auto_copy {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(combined);
+                            }
+                        }
+                    }
+                    self.status = format!("{} page(s) importée(s)", total);
+                }
+            }
+            Err(e) => self.status = format!("import échoué: {e}"),
+        }
     }
 
     fn save_cfg(&self) {
@@ -2272,6 +2323,9 @@ impl eframe::App for ScantoutApp {
             } else {
                 egui::RichText::new(format!("⌨ {}", self.hotkey_label)).strong()
             };
+            if ui.button("Charger…").on_hover_text("Charger une image ou un PDF et l'analyser comme une capture").clicked() {
+                self.import_file(ui.ctx());
+            }
             if ui.button(label).on_hover_text("Cliquer puis presser une nouvelle combinaison").clicked() {
                 self.recording = !self.recording;
                 if self.recording {
