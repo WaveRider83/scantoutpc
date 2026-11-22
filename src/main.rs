@@ -137,22 +137,11 @@ fn main() -> eframe::Result<()> {
         let _ = hotkey_manager.register(default_hotkey());
     }
 
+    // Restauration exacte de la position/taille mémorisées ; le filtre n'écarte que les
+    // valeurs aberrantes (fenêtre garée hors écran à -30000). L'utilisateur veut retrouver
+    // sa fenêtre exactement où il l'a laissée.
     let saved_pos = if !cfg.start_mini {
-        cfg.win_x.zip(cfg.win_y)
-            .filter(|(x, y)| x.abs() < 10000 && y.abs() < 10000)
-            .map(|(x, y)| {
-                // ramène la position sauvegardée dans la zone de travail (hors barre des tâches)
-                match work_area_near(x as f32, y as f32) {
-                    Some((wa_x, wa_y, wa_w, wa_h)) => {
-                        let w = cfg.win_w.unwrap_or(460.0);
-                        let h = cfg.win_h.unwrap_or(360.0);
-                        let cx = (x as f32).clamp(wa_x, (wa_x + wa_w - w).max(wa_x));
-                        let cy = (y as f32).clamp(wa_y, (wa_y + wa_h - h).max(wa_y));
-                        (cx as i32, cy as i32)
-                    }
-                    None => (x, y),
-                }
-            })
+        cfg.win_x.zip(cfg.win_y).filter(|(x, y)| x.abs() < 10000 && y.abs() < 10000)
     } else { None };
     let options = eframe::NativeOptions {
         viewport: {
@@ -1202,21 +1191,17 @@ impl ScantoutApp {
         };
         let w = r.width().min(wa_w);
         let h = r.height().min(wa_h);
-        // Entièrement hors de la zone de travail ? -> placement par défaut en bas à droite
-        let disjoint = r.max.x <= wa_x || r.min.x >= wa_x + wa_w || r.max.y <= wa_y || r.min.y >= wa_y + wa_h;
-        // Sinon, mais déborde (ex. sous la barre des tâches haute) ? -> on ramène dedans
-        let over = r.min.x < wa_x || r.min.y < wa_y || r.max.x > wa_x + wa_w || r.max.y > wa_y + wa_h;
-        if !disjoint && !over {
+        // Fenêtre totalement hors de la zone de travail (marge 64px anti faux-positifs DPI) ?
+        // -> placement par défaut en bas à droite. Sinon, on ne touche pas à la position de l'utilisateur.
+        let margin = 64.0;
+        let disjoint = r.max.x <= wa_x + margin
+            || r.min.x >= wa_x + wa_w - margin
+            || r.max.y <= wa_y + margin
+            || r.min.y >= wa_y + wa_h - margin;
+        if !disjoint {
             return;
         }
-        let (x, y) = if disjoint {
-            (wa_x + wa_w - w - 10.0, wa_y + wa_h - h - 10.0)
-        } else {
-            (
-                r.min.x.clamp(wa_x, (wa_x + wa_w - w).max(wa_x)),
-                r.min.y.clamp(wa_y, (wa_y + wa_h - h).max(wa_y)),
-            )
-        };
+        let (x, y) = (wa_x + wa_w - w - 10.0, wa_y + wa_h - h - 10.0);
         dbg_log(&format!("ensure_on_screen: ({:.0},{:.0}) -> ({},{}) (zone travail {:.0},{:.0} {}x{})", r.min.x, r.min.y, x, y, wa_x, wa_y, wa_w, wa_h));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
     }
