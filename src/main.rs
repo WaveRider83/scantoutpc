@@ -197,6 +197,7 @@ fn main() -> eframe::Result<()> {
                 drag_screen: None,
                 main_visible: true,
                 capture: None,
+                show_full_capture: false,
                 overlay_active: false,
                 overlay_shots: None,
                 pending_capture: None,
@@ -962,6 +963,7 @@ struct ScantoutApp {
     drag_screen: Option<usize>,
     main_visible: bool,
     capture: Option<egui::TextureHandle>,
+    show_full_capture: bool,
     overlay_active: bool,
     overlay_shots: Option<Vec<OverlayShot>>,
     pending_capture: Option<image::RgbaImage>,
@@ -2317,7 +2319,9 @@ impl eframe::App for ScantoutApp {
             let max_w = ui.available_width();
             let sz = tex.size_vec2();
             let scale = (max_w / sz.x).min(170.0 / sz.y).min(2.0);
-            ui.add(egui::Image::from_texture(tex).fit_to_exact_size(egui::vec2(sz.x * scale, sz.y * scale)));
+            let resp = ui.add(egui::Image::from_texture(tex).sense(egui::Sense::click()).fit_to_exact_size(egui::vec2(sz.x * scale, sz.y * scale))).on_hover_text("Cliquer pour afficher l'image en grand");
+            if resp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+            if resp.clicked() { self.show_full_capture = true; }
         }
         let hist = scan_history();
         egui::CollapsingHeader::new(egui::RichText::new(format!("🕘  Historique — {} capture{}", hist.len(), if hist.len() > 1 { "s" } else { "" })).strong())
@@ -2455,6 +2459,39 @@ impl eframe::App for ScantoutApp {
 
 
         }
+        if self.show_full_capture {
+            if let Some(tex) = self.capture.clone() {
+                let sz = tex.size_vec2();
+                let (mon_w, mon_h) = ctx.input(|i| i.raw.screen_rect.map(|r| (r.width(), r.height())).unwrap_or((1920.0, 940.0)));
+                let fit = ((mon_w - 80.0) / sz.x).min((mon_h - 120.0) / sz.y).min(1.0).max(0.05);
+                let win_size = [sz.x * fit + 24.0, sz.y * fit + 40.0];
+                let mut closed = false;
+                ctx.show_viewport_immediate(
+                    egui::ViewportId::from_hash_of("capture-viewer"),
+                    egui::ViewportBuilder::default()
+                        .with_title("Capture — ScantoutPC")
+                        .with_inner_size(win_size)
+                        .with_resizable(true)
+                        .with_min_inner_size([160.0, 120.0]),
+                    |ui, _class| {
+                        let avail = ui.available_size();
+                        let s = ((avail.x / sz.x).min(avail.y / sz.y)).min(1.0).max(0.02);
+                        ui.centered_and_justified(|ui| {
+                            ui.add(egui::Image::from_texture(&tex).fit_to_exact_size(egui::vec2(sz.x * s, sz.y * s)));
+                        });
+                        if ui.input(|i| i.viewport().close_requested()) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            closed = true;
+                        }
+                    },
+                );
+                if closed {
+                    self.show_full_capture = false;
+                }
+            } else {
+                self.show_full_capture = false;
+            }
+        }
+
         let parent_visible = self.main_visible && ctx.input(|i| i.viewport().visible()) != Some(false);
         if self.picking && !parent_visible {
             dbg_log(&format!("spawn blocked: main_visible={} egui_visible={:?}", self.main_visible, ctx.input(|i| i.viewport().visible())));
