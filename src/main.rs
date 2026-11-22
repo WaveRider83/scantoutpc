@@ -43,12 +43,23 @@ fn capture_zone(sel: &PickedZone, hw_accel: bool) -> Result<image::RgbaImage, St
     let w = zw.min(mw - x);
     let h = zh.min(mh - y);
     if w <= 0 || h <= 0 { return Err("zone hors écran".into()); }
+    let t0 = std::time::Instant::now();
     let mut out = if hw_accel {
-        mon.capture_region(x as u32, y as u32, w as u32, h as u32).map_err(|e| e.to_string())?
+        let r = mon.capture_region(x as u32, y as u32, w as u32, h as u32).map_err(|e| e.to_string());
+        match &r {
+            Ok(_) => dbg_log(&format!("capture_zone: path=gpu/wgc zone=({},{} {}x{}) ok en {:?}", x, y, w, h, t0.elapsed())),
+            Err(e) => dbg_log(&format!("capture_zone: path=gpu/wgc zone=({},{} {}x{}) ECHEC en {:?}: {e}", x, y, w, h, t0.elapsed())),
+        }
+        r?
     } else {
         let ox = mon.x().map_err(|e| e.to_string())?;
         let oy = mon.y().map_err(|e| e.to_string())?;
-        gdi::gdi_capture(ox + x, oy + y, w, h)?
+        let r = gdi::gdi_capture(ox + x, oy + y, w, h);
+        match &r {
+            Ok(_) => dbg_log(&format!("capture_zone: path=cpu/gdi zone=({},{} {}x{}) ok en {:?}", x, y, w, h, t0.elapsed())),
+            Err(e) => dbg_log(&format!("capture_zone: path=cpu/gdi zone=({},{} {}x{}) ECHEC en {:?}: {e}", x, y, w, h, t0.elapsed())),
+        }
+        r?
     };
     for px in out.pixels_mut() { px.0[3] = 255; }
     Ok(out)
@@ -1223,6 +1234,7 @@ impl ScantoutApp {
                 "opt_hw" => {
                     self.hw_accel = !self.hw_accel;
                     self.tray_opts.hw.set_checked(self.hw_accel);
+                    dbg_log(&format!("hw_accel -> {}", self.hw_accel));
                     self.status = if self.hw_accel { "capture GPU (WGC) activée".into() } else { "capture GDI (CPU) — GPU au repos".into() };
                     self.save_cfg();
                 }
@@ -1873,6 +1885,8 @@ impl eframe::App for ScantoutApp {
             let mut shots = Vec::new();
             if let Ok(monitors) = xcap::Monitor::all() {
                 for (i, m) in monitors.iter().enumerate() {
+                    let t0 = std::time::Instant::now();
+                    let path = if self.hw_accel { "gpu/wgc" } else { "cpu/gdi" };
                     let img = if self.hw_accel {
                         m.capture_image().ok()
                     } else {
@@ -1880,6 +1894,7 @@ impl eframe::App for ScantoutApp {
                         let mh = m.height().unwrap_or(0) as i32;
                         gdi::gdi_capture(m.x().unwrap_or(0), m.y().unwrap_or(0), mw, mh).ok()
                     };
+                    dbg_log(&format!("overlay moniteur[{}]: path={} ok={} en {:?}", i, path, img.is_some(), t0.elapsed()));
                     if let Some(img) = img {
                         let scale = m.scale_factor().unwrap_or(1.0);
                         let w = img.width() as usize;
