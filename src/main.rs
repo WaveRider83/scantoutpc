@@ -355,6 +355,31 @@ fn history_append(dir: &std::path::Path, line: &str) {
 }
 
 
+/// Zone de travail (hors barre des tâches) du moniteur le plus proche de (x, y), en pixels écran.
+#[cfg(windows)]
+fn work_area_near(x: f32, y: f32) -> Option<(f32, f32, f32, f32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    unsafe {
+        let pt = POINT { x: x as i32, y: y as i32 };
+        let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        if mon.is_null() {
+            return None;
+        }
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(mon, &mut mi) == 0 {
+            return None;
+        }
+        let r = mi.rcWork;
+        Some((r.left as f32, r.top as f32, (r.right - r.left) as f32, (r.bottom - r.top) as f32))
+    }
+}
+#[cfg(not(windows))]
+fn work_area_near(_x: f32, _y: f32) -> Option<(f32, f32, f32, f32)> {
+    None
+}
+
 const MINI_W: f32 = 230.0;
 const MINI_H: f32 = 150.0;
 const NORMAL_SIZE: egui::Vec2 = egui::vec2(460.0, 360.0);
@@ -1146,31 +1171,45 @@ impl ScantoutApp {
     /// Garantit que la fenêtre est visible sur un écran : si sa position courante est hors
     /// limites (ou inconnue), on la ramène dans les bornes du moniteur.
     fn ensure_on_screen(&self, ctx: &egui::Context) {
+        // Zone de travail du moniteur le plus proche (exclut la barre des tâches)
+        let r = ctx.input(|i| i.viewport().outer_rect);
+        let wa = work_area_near(
+            r.map(|r| r.center().x).unwrap_or(0.0),
+            r.map(|r| r.center().y).unwrap_or(0.0),
+        );
         let mon = ctx
             .input(|i| i.viewport().monitor_size)
             .unwrap_or(egui::vec2(1920.0, 1080.0));
-        let r = match ctx.input(|i| i.viewport().outer_rect) {
+        let (wa_x, wa_y, wa_w, wa_h) = wa.unwrap_or((0.0, 0.0, mon.x, mon.y));
+        let r = match r {
             Some(r) => r,
             None => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-                    (mon.x - MINI_W - 10.0).max(0.0),
-                    (mon.y - MINI_H - 46.0).max(0.0),
+                    wa_x + wa_w - MINI_W - 10.0,
+                    wa_y + wa_h - MINI_H - 10.0,
                 )));
                 return;
             }
         };
-        let off = r.max.x < 40.0
-            || r.min.x > mon.x - 40.0
-            || r.max.y < 40.0
-            || r.min.y > mon.y - 40.0;
-        if off {
-            let w = r.width().min(mon.x);
-            let h = r.height().min(mon.y);
-            let x = r.min.x.clamp(0.0, (mon.x - w).max(0.0));
-            let y = r.min.y.clamp(0.0, (mon.y - h).max(0.0));
-            dbg_log(&format!("ensure_on_screen: ({:.0},{:.0}) hors écran -> ({:.0},{:.0})", r.min.x, r.min.y, x, y));
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        let w = r.width().min(wa_w);
+        let h = r.height().min(wa_h);
+        // Entièrement hors de la zone de travail ? -> placement par défaut en bas à droite
+        let disjoint = r.max.x <= wa_x || r.min.x >= wa_x + wa_w || r.max.y <= wa_y || r.min.y >= wa_y + wa_h;
+        // Sinon, mais déborde (ex. sous la barre des tâches haute) ? -> on ramène dedans
+        let over = r.min.x < wa_x || r.min.y < wa_y || r.max.x > wa_x + wa_w || r.max.y > wa_y + wa_h;
+        if !disjoint && !over {
+            return;
         }
+        let (x, y) = if disjoint {
+            (wa_x + wa_w - w - 10.0, wa_y + wa_h - h - 10.0)
+        } else {
+            (
+                r.min.x.clamp(wa_x, (wa_x + wa_w - w).max(wa_x)),
+                r.min.y.clamp(wa_y, (wa_y + wa_h - h).max(wa_y)),
+            )
+        };
+        dbg_log(&format!("ensure_on_screen: ({:.0},{:.0}) -> ({},{}) (zone travail {:.0},{:.0} {}x{})", r.min.x, r.min.y, x, y, wa_x, wa_y, wa_w, wa_h));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
     }
 
     fn toggle_main(&mut self, ctx: &egui::Context) {
