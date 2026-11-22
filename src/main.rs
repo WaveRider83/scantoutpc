@@ -26,7 +26,7 @@ fn monitor_key(m: &xcap::Monitor) -> String {
     m.name().unwrap_or_else(|_| "?".into())
 }
 
-fn capture_zone(sel: &PickedZone, hw_accel: bool) -> Result<image::RgbaImage, String> {
+fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let mon = monitors.iter().find(|m| monitor_key(m) == sel.monitor)
         .ok_or_else(|| format!("écran '{}' introuvable", sel.monitor))?;
@@ -44,22 +44,11 @@ fn capture_zone(sel: &PickedZone, hw_accel: bool) -> Result<image::RgbaImage, St
     let h = zh.min(mh - y);
     if w <= 0 || h <= 0 { return Err("zone hors écran".into()); }
     let t0 = std::time::Instant::now();
-    let mut out = if hw_accel {
-        let r = mon.capture_region(x as u32, y as u32, w as u32, h as u32).map_err(|e| e.to_string());
-        match &r {
-            Ok(_) => dbg_log(&format!("capture_zone: path=gpu/wgc zone=({},{} {}x{}) ok en {:?}", x, y, w, h, t0.elapsed())),
-            Err(e) => dbg_log(&format!("capture_zone: path=gpu/wgc zone=({},{} {}x{}) ECHEC en {:?}: {e}", x, y, w, h, t0.elapsed())),
-        }
-        r?
-    } else {
-        let ox = mon.x().map_err(|e| e.to_string())?;
-        let oy = mon.y().map_err(|e| e.to_string())?;
-        let r = gdi::gdi_capture(ox + x, oy + y, w, h);
-        match &r {
-            Ok(_) => dbg_log(&format!("capture_zone: path=cpu/gdi zone=({},{} {}x{}) ok en {:?}", x, y, w, h, t0.elapsed())),
-            Err(e) => dbg_log(&format!("capture_zone: path=cpu/gdi zone=({},{} {}x{}) ECHEC en {:?}: {e}", x, y, w, h, t0.elapsed())),
-        }
-        r?
+    let ox = mon.x().map_err(|e| e.to_string())?;
+    let oy = mon.y().map_err(|e| e.to_string())?;
+    let mut out = match gdi::gdi_capture(ox + x, oy + y, w, h) {
+        Ok(img) => { dbg_log(&format!("capture_zone: path=gdi zone=({},{} {}x{}) ok en {:?}", x, y, w, h, t0.elapsed())); img }
+        Err(e) => { dbg_log(&format!("capture_zone: path=gdi zone=({},{} {}x{}) ECHEC en {:?}: {e}", x, y, w, h, t0.elapsed())); return Err(e); }
     };
     for px in out.pixels_mut() { px.0[3] = 255; }
     Ok(out)
@@ -97,7 +86,6 @@ fn main() -> eframe::Result<()> {
     let opt_resize = CheckMenuItem::with_id("opt_resize", "Adapter la fenêtre à la capture", true, cfg.auto_resize, None);
     let opt_barcode = CheckMenuItem::with_id("opt_barcode", "Décoder les codes-barres (QR, DataMatrix…)", true, cfg.decode_barcodes, None);
     let opt_top = CheckMenuItem::with_id("opt_top", "Toujours au premier plan", true, cfg.always_on_top, None);
-    let opt_hw = CheckMenuItem::with_id("opt_hw", "Accélération matérielle", true, cfg.hw_accel, None);
     let opt_trad = CheckMenuItem::with_id("opt_trad", "Traduction (Argos, hors-ligne)", true, cfg.trad_enabled, None);
     let mut trad_lang_items: Vec<(String, CheckMenuItem)> = Vec::new();
     let trad_langs_sub = Submenu::with_id("trad_langs", "Langues proposées", true);
@@ -112,7 +100,7 @@ fn main() -> eframe::Result<()> {
     let lang_zh = CheckMenuItem::with_id("lang_zh", "Langue OCR : 中文 (chinois)", true, cfg.ocr_lang == "zh", None);
     let lang_ko = CheckMenuItem::with_id("lang_ko", "Langue OCR : 한국어 (coréen)", true, cfg.ocr_lang == "ko", None);
     let options_sub = Submenu::with_id("options", "Options", true);
-    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &opt_top, &opt_hw, &PredefinedMenuItem::separator(), &opt_trad, &trad_langs_sub, &trad_dl, &trad_pip, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
+    let _ = options_sub.append_items(&[&opt_auto, &opt_keep, &opt_clear, &opt_light, &opt_autostart, &opt_start_mini, &opt_resize, &opt_barcode, &opt_top, &PredefinedMenuItem::separator(), &opt_trad, &trad_langs_sub, &trad_dl, &trad_pip, &PredefinedMenuItem::separator(), &lang_latin, &lang_zh, &lang_ko]);
     let tray_opts = TrayOptions {
         auto_copy: opt_auto.clone(),
         keep_history: opt_keep.clone(),
@@ -122,7 +110,6 @@ fn main() -> eframe::Result<()> {
         resize: opt_resize.clone(),
         barcode: opt_barcode.clone(),
         top: opt_top.clone(),
-        hw: opt_hw.clone(),
         trad: opt_trad.clone(),
         trad_langs: trad_lang_items.clone(),
         latin: lang_latin.clone(),
@@ -201,7 +188,6 @@ fn main() -> eframe::Result<()> {
                 decode_barcodes: cfg.decode_barcodes,
                 always_on_top: cfg.always_on_top,
                 top_init: true,
-                hw_accel: cfg.hw_accel,
                 mini: false,
                 mini_since: None,
                 mini_collapsing: None,
@@ -709,7 +695,6 @@ struct AppConfig {
     ocr_lang: String,
     decode_barcodes: bool,
     always_on_top: bool,
-    hw_accel: bool,
     win_x: Option<i32>,
     win_y: Option<i32>,
     win_w: Option<f32>,
@@ -751,7 +736,6 @@ fn load_config() -> AppConfig {
         ocr_lang: "latin".to_string(),
         decode_barcodes: true,
         always_on_top: true,
-        hw_accel: false,
         win_x: None,
         win_y: None,
         win_w: None,
@@ -779,7 +763,6 @@ fn load_config() -> AppConfig {
                 "auto_resize" => cfg.auto_resize = parse_bool(v),
                 "decode_barcodes" => cfg.decode_barcodes = parse_bool(v),
                 "always_on_top" => cfg.always_on_top = parse_bool(v),
-                "hw_accel" => cfg.hw_accel = parse_bool(v),
                 "win_x" => cfg.win_x = v.parse::<i32>().ok(),
                 "win_y" => cfg.win_y = v.parse::<i32>().ok(),
                 "win_w" => cfg.win_w = v.parse::<f32>().ok(),
@@ -798,7 +781,7 @@ fn load_config() -> AppConfig {
 
 fn save_config(cfg: &AppConfig) {
     let body = format!(
-        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nhw_accel={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\ntrad_enabled={}\ntrad_langs={}\ntrad_source={}\nshow_welcome={}\n",
+        "[scantoutpc]\nhotkey={}\nstart_mini={}\nauto_copy={}\nkeep_history={}\nlight_mode={}\nauto_resize={}\nocr_lang={}\ndecode_barcodes={}\nalways_on_top={}\nwin_x={}\nwin_y={}\nwin_w={}\nwin_h={}\ntrad_enabled={}\ntrad_langs={}\ntrad_source={}\nshow_welcome={}\n",
         cfg.hotkey,
         cfg.start_mini as u8,
         cfg.auto_copy as u8,
@@ -808,7 +791,6 @@ fn save_config(cfg: &AppConfig) {
         cfg.ocr_lang,
         cfg.decode_barcodes as u8,
         cfg.always_on_top as u8,
-        cfg.hw_accel as u8,
         cfg.win_x.map(|v| v.to_string()).unwrap_or_default(),
         cfg.win_y.map(|v| v.to_string()).unwrap_or_default(),
         cfg.win_w.map(|v| format!("{v:.0}")).unwrap_or_default(),
@@ -908,7 +890,6 @@ struct TrayOptions {
     autostart: CheckMenuItem,
     barcode: CheckMenuItem,
     top: CheckMenuItem,
-    hw: CheckMenuItem,
     trad: CheckMenuItem,
     trad_langs: Vec<(String, CheckMenuItem)>,
 }
@@ -937,7 +918,6 @@ struct ScantoutApp {
     decode_barcodes: bool,
     always_on_top: bool,
     top_init: bool,
-    hw_accel: bool,
     mini: bool,
     mini_since: Option<std::time::Instant>,
     mini_collapsing: Option<std::time::Instant>,
@@ -991,9 +971,9 @@ impl ScantoutApp {
     }
 
     fn do_capture(&mut self, ctx: &egui::Context) {
-        dbg_log(&format!("do_capture start (hw_accel={})", self.hw_accel));
+        dbg_log("do_capture start");
         match self.zone.clone() {
-            Some(z) => match self.pending_capture.take().map(Ok).unwrap_or_else(|| capture_zone(&z, self.hw_accel)) {
+            Some(z) => match self.pending_capture.take().map(Ok).unwrap_or_else(|| capture_zone(&z)) {
                 Ok(img) => {
                     dbg_log("capture_zone ok");
                     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -1126,7 +1106,6 @@ impl ScantoutApp {
             auto_resize: self.auto_resize,
             decode_barcodes: self.decode_barcodes,
             always_on_top: self.always_on_top,
-            hw_accel: self.hw_accel,
             ocr_lang: ocr_lang_key(&self.ocr_lang).to_string(),
             win_x: self.win_pos.map(|p| p[0]),
             win_y: self.win_pos.map(|p| p[1]),
@@ -1231,13 +1210,6 @@ impl ScantoutApp {
                     self.tray_opts.barcode.set_checked(self.decode_barcodes);
                     self.save_cfg();
                 }
-                "opt_hw" => {
-                    self.hw_accel = !self.hw_accel;
-                    self.tray_opts.hw.set_checked(self.hw_accel);
-                    dbg_log(&format!("hw_accel -> {}", self.hw_accel));
-                    self.status = if self.hw_accel { "capture GPU (WGC) activée".into() } else { "capture GDI (CPU) — GPU au repos".into() };
-                    self.save_cfg();
-                }
                 "opt_trad" => {
                     self.trad_enabled = !self.trad_enabled;
                     self.tray_opts.trad.set_checked(self.trad_enabled);
@@ -1335,7 +1307,6 @@ impl ScantoutApp {
         if ui.checkbox(&mut self.keep_history, "Conserver l'historique des captures").changed() { self.tray_opts.keep_history.set_checked(self.keep_history); self.save_cfg(); }
         if ui.checkbox(&mut self.light_mode, "Thème clair").changed() { self.tray_opts.light.set_checked(self.light_mode); self.save_cfg(); }
         if ui.checkbox(&mut self.always_on_top, "Toujours au premier plan").changed() { self.tray_opts.top.set_checked(self.always_on_top); ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal })); self.save_cfg(); }
-        if ui.checkbox(&mut self.hw_accel, "Accélération matérielle (GPU)").changed() { self.tray_opts.hw.set_checked(self.hw_accel); self.save_cfg(); }
         if ui.checkbox(&mut self.decode_barcodes, "Décoder les codes-barres").changed() { self.tray_opts.barcode.set_checked(self.decode_barcodes); self.save_cfg(); }
         if ui.checkbox(&mut self.auto_resize, "Adapter la fenêtre à la capture").changed() { self.tray_opts.resize.set_checked(self.auto_resize); self.save_cfg(); }
         if ui.checkbox(&mut self.start_mini, "Réduire au lancement").changed() { self.tray_opts.start_mini.set_checked(self.start_mini); self.save_cfg(); }
@@ -1881,20 +1852,15 @@ impl eframe::App for ScantoutApp {
         }
         if self.picking && self.overlay_shots.is_none() {
             self.pending_capture = None;
-            dbg_log(&format!("spawn overlays start (hw_accel={})", self.hw_accel));
+            dbg_log("spawn overlays start");
             let mut shots = Vec::new();
             if let Ok(monitors) = xcap::Monitor::all() {
                 for (i, m) in monitors.iter().enumerate() {
                     let t0 = std::time::Instant::now();
-                    let path = if self.hw_accel { "gpu/wgc" } else { "cpu/gdi" };
-                    let img = if self.hw_accel {
-                        m.capture_image().ok()
-                    } else {
-                        let mw = m.width().unwrap_or(0) as i32;
-                        let mh = m.height().unwrap_or(0) as i32;
-                        gdi::gdi_capture(m.x().unwrap_or(0), m.y().unwrap_or(0), mw, mh).ok()
-                    };
-                    dbg_log(&format!("overlay moniteur[{}]: path={} ok={} en {:?}", i, path, img.is_some(), t0.elapsed()));
+                    let mw = m.width().unwrap_or(0) as i32;
+                    let mh = m.height().unwrap_or(0) as i32;
+                    let img = gdi::gdi_capture(m.x().unwrap_or(0), m.y().unwrap_or(0), mw, mh).ok();
+                    dbg_log(&format!("overlay moniteur[{}]: path=gdi ok={} en {:?}", i, img.is_some(), t0.elapsed()));
                     if let Some(img) = img {
                         let scale = m.scale_factor().unwrap_or(1.0);
                         let w = img.width() as usize;

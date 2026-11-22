@@ -13,7 +13,7 @@ image = "0.25.10"
 oar-ocr = { version = "0.11.0", default-features = false, features = ["simd"] }
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std", "api-17"] }
 tray-icon = "0.26.1"
-xcap = { version = "0.9.10", features = ["wgc"] }
+xcap = "0.9.10"
 windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
 ureq = "2"
 
