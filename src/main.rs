@@ -152,7 +152,7 @@ fn main() -> eframe::Result<()> {
             let vb = if let Some((x, y)) = saved_pos { vb.with_position([x as f32, y as f32]) } else { vb };
             vb
             .with_min_inner_size([MINI_W, MINI_H])
-            .with_decorations(!cfg.start_mini)
+            .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top() // affiné juste après via WindowLevel si désactivé
             .with_resizable(true)
@@ -222,6 +222,7 @@ fn main() -> eframe::Result<()> {
                 trad_rx: None,
                 trad_busy: false,
                 trad_result: None,
+                title_icon: None,
                 show_welcome: cfg.show_welcome,
                 welcome_dont_show: false,
                 dep_missing: check_dependencies(),
@@ -957,6 +958,7 @@ struct ScantoutApp {
     trad_rx: Option<std::sync::mpsc::Receiver<TradEvent>>,
     trad_busy: bool,
     trad_result: Option<(String, String)>,
+    title_icon: Option<egui::TextureHandle>,
     show_welcome: bool,
     welcome_dont_show: bool,
     dep_missing: Vec<String>,
@@ -1538,6 +1540,169 @@ impl eframe::App for ScantoutApp {
     }
 
 
+    fn request_close(&mut self, ctx: &egui::Context) {
+        if self.mini {
+            self.mini_since = None;
+            self.mini_collapsing = None;
+            self.main_visible = false;
+            self.show_about = false;
+            self.save_cfg();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else {
+            self.enter_mini(ctx);
+        }
+    }
+
+    fn menu_contents(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if ui.button("Définir la zone…").clicked() { self.handle_menu_event("zone", ctx); ui.close(); }
+        ui.separator();
+        if ui.checkbox(&mut self.auto_copy, "Copie auto dans le presse-papier").changed() { self.tray_opts.auto_copy.set_checked(self.auto_copy); self.save_cfg(); }
+        if ui.checkbox(&mut self.keep_history, "Conserver l'historique des captures").changed() { self.tray_opts.keep_history.set_checked(self.keep_history); self.save_cfg(); }
+        if ui.checkbox(&mut self.light_mode, "Thème clair").changed() { self.tray_opts.light.set_checked(self.light_mode); self.save_cfg(); }
+        if ui.checkbox(&mut self.always_on_top, "Toujours au premier plan").changed() { self.tray_opts.top.set_checked(self.always_on_top); ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal })); self.save_cfg(); }
+        if ui.checkbox(&mut self.hw_accel, "Accélération matérielle (GPU)").changed() { self.tray_opts.hw.set_checked(self.hw_accel); self.save_cfg(); }
+        if ui.checkbox(&mut self.decode_barcodes, "Décoder les codes-barres").changed() { self.tray_opts.barcode.set_checked(self.decode_barcodes); self.save_cfg(); }
+        if ui.checkbox(&mut self.auto_resize, "Adapter la fenêtre à la capture").changed() { self.tray_opts.resize.set_checked(self.auto_resize); self.save_cfg(); }
+        if ui.checkbox(&mut self.start_mini, "Réduire au lancement").changed() { self.tray_opts.start_mini.set_checked(self.start_mini); self.save_cfg(); }
+        let mut autostart = self.tray_opts.autostart.is_checked();
+        if ui.checkbox(&mut autostart, "Démarrer avec Windows").changed() { self.handle_menu_event("opt_autostart", ctx); }
+        ui.separator();
+        ui.menu_button("Langue OCR", |ui| {
+            for (key, label) in [("latin", "FR / EN (latin)"), ("zh", "中文 (chinois)"), ("ko", "한국어 (coréen)")] {
+                let selected = ocr_lang_key(&self.ocr_lang) == key;
+                if ui.selectable_label(selected, label).clicked() {
+                    let id = match key { "zh" => "lang_zh", "ko" => "lang_ko", _ => "lang_latin" };
+                    self.handle_menu_event(id, ctx);
+                    ui.close();
+                }
+            }
+        });
+        ui.menu_button("Traduction (hors-ligne)", |ui| {
+            if ui.checkbox(&mut self.trad_enabled, "Traduction activée").changed() { self.tray_opts.trad.set_checked(self.trad_enabled); self.save_cfg(); }
+            if ui.button("Télécharger les modèles…").clicked() { self.handle_menu_event("trad_dl", ctx); ui.close(); }
+            if ui.button("Installer / MAJ le moteur (pip)…").clicked() { self.handle_menu_event("trad_pip", ctx); ui.close(); }
+        });
+        ui.separator();
+        if ui.button("Effacer l'historique").clicked() { self.handle_menu_event("opt_clear", ctx); ui.close(); }
+        ui.separator();
+        if ui.button("À propos…").clicked() { self.handle_menu_event("about", ctx); ui.close(); }
+        if ui.button("Quitter").clicked() { self.handle_menu_event("quit", ctx); }
+    }
+
+    fn title_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let dark = ui.visuals().dark_mode;
+        let bar_bg = if dark { egui::Color32::from_rgb(26, 27, 33) } else { egui::Color32::from_rgb(236, 236, 241) };
+        let line = if dark { egui::Color32::from_rgb(52, 53, 62) } else { egui::Color32::from_rgb(213, 213, 220) };
+        let fg = ui.visuals().text_color();
+        let bar_h = 38.0;
+        let full_w = ui.available_width();
+        let (rect, bar) = ui.allocate_exact_size(egui::vec2(full_w, bar_h), egui::Sense::click_and_drag());
+        {
+            let painter = ui.painter();
+            painter.rect_filled(rect, 0.0, bar_bg);
+            painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, line));
+        }
+        if bar.drag_started() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if bar.double_clicked() {
+            let max = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+        }
+        // icône + titre
+        if self.title_icon.is_none() {
+            if let Ok(img) = image::load_from_memory(include_bytes!("../assets/icon_32.png")) {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                self.title_icon = Some(ui.ctx().load_texture("title-icon", color, egui::TextureOptions::LINEAR));
+            }
+        }
+        let mut x = rect.left() + 10.0;
+        if let Some(tex) = &self.title_icon {
+            let r = egui::Rect::from_min_size(egui::pos2(x, rect.center().y - 9.0), egui::vec2(18.0, 18.0));
+            ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+            x += 26.0;
+        }
+        ui.painter().text(egui::pos2(x, rect.center().y - 6.0), egui::Align2::LEFT_CENTER, "ScantoutPC", egui::FontId::proportional(13.0), fg);
+        ui.painter().text(egui::pos2(x, rect.center().y + 7.0), egui::Align2::LEFT_CENTER, concat!("v", env!("CARGO_PKG_VERSION")), egui::FontId::proportional(9.0), ui.visuals().weak_text_color());
+        // boutons fenêtre (droite -> gauche) : menu, min, max, close
+        let btn = 44.0;
+        let close_r = egui::Rect::from_min_size(egui::pos2(rect.right() - btn, rect.top()), egui::vec2(btn, bar_h));
+        let max_r = close_r.translate(egui::vec2(-btn, 0.0));
+        let min_r = max_r.translate(egui::vec2(-btn, 0.0));
+        let menu_w = 96.0;
+        let menu_r = min_r.translate(egui::vec2(-menu_w - 4.0, 0.0));
+        // menu ☰
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(menu_r).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        child.menu_button(egui::RichText::new("☰  Menu").strong(), |ui| self.menu_contents(ui, ctx));
+        drop(child);
+        // min
+        let min_resp = ui.interact(min_r, egui::Id::new("tb-min"), egui::Sense::click());
+        if min_resp.hovered() { ui.painter().rect_filled(min_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
+        {
+            let c = min_r.center();
+            ui.painter().line_segment([egui::pos2(c.x - 5.0, c.y + 0.5), egui::pos2(c.x + 5.0, c.y + 0.5)], egui::Stroke::new(1.6, fg));
+        }
+        if min_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
+        // max / restore
+        let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+        let max_resp = ui.interact(max_r, egui::Id::new("tb-max"), egui::Sense::click());
+        if max_resp.hovered() { ui.painter().rect_filled(max_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
+        {
+            let c = max_r.center();
+            let s = egui::Stroke::new(1.4, fg);
+            if maximized {
+                ui.painter().rect_stroke(egui::Rect::from_min_max(egui::pos2(c.x - 3.0, c.y - 6.0), egui::pos2(c.x + 6.0, c.y + 3.0)), 0.0, s, egui::StrokeKind::Outside);
+                ui.painter().rect_filled(egui::Rect::from_min_max(egui::pos2(c.x - 6.0, c.y - 3.0), egui::pos2(c.x + 3.0, c.y + 6.0)), 0.0, bar_bg);
+                ui.painter().rect_stroke(egui::Rect::from_min_max(egui::pos2(c.x - 6.0, c.y - 3.0), egui::pos2(c.x + 3.0, c.y + 6.0)), 0.0, s, egui::StrokeKind::Outside);
+            } else {
+                ui.painter().rect_stroke(egui::Rect::from_min_max(egui::pos2(c.x - 5.0, c.y - 5.0), egui::pos2(c.x + 5.0, c.y + 5.0)), 0.0, s, egui::StrokeKind::Outside);
+            }
+        }
+        if max_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized)); }
+        // close
+        let close_resp = ui.interact(close_r, egui::Id::new("tb-close"), egui::Sense::click());
+        let close_hover = close_resp.hovered();
+        if close_hover { ui.painter().rect_filled(close_r, 0.0, egui::Color32::from_rgb(232, 17, 35)); }
+        {
+            let c = close_r.center();
+            let col = if close_hover { egui::Color32::WHITE } else { fg };
+            let s = egui::Stroke::new(1.6, col);
+            let d = 5.0;
+            ui.painter().line_segment([egui::pos2(c.x - d, c.y - d), egui::pos2(c.x + d, c.y + d)], s);
+            ui.painter().line_segment([egui::pos2(c.x - d, c.y + d), egui::pos2(c.x + d, c.y - d)], s);
+        }
+        if close_resp.clicked() { self.request_close(ctx); }
+    }
+
+    fn resize_handles(ui: &mut egui::Ui, ctx: &egui::Context) {
+        use egui::ResizeDirection as Dir;
+        // contour fin de la fenêtre
+        let screen = ui.ctx().screen_rect();
+        let dark = ui.visuals().dark_mode;
+        ui.painter().rect_stroke(screen.shrink(0.5), 0.0, egui::Stroke::new(1.0, if dark { egui::Color32::from_rgb(70, 71, 82) } else { egui::Color32::from_rgb(200, 200, 208) }), egui::StrokeKind::Inside);
+        if ctx.input(|i| i.viewport().maximized).unwrap_or(false) { return; }
+        let s = screen;
+        let t = 5.0_f32;
+        let c = 14.0_f32;
+        let zones: [(egui::Rect, Dir, egui::CursorIcon); 8] = [
+            (egui::Rect::from_min_max(s.left_top(), egui::pos2(s.right(), s.top() + t)), Dir::North, egui::CursorIcon::ResizeVertical),
+            (egui::Rect::from_min_max(egui::pos2(s.left(), s.bottom() - t), s.right_bottom()), Dir::South, egui::CursorIcon::ResizeVertical),
+            (egui::Rect::from_min_max(egui::pos2(s.right() - t, s.top()), s.right_bottom()), Dir::East, egui::CursorIcon::ResizeHorizontal),
+            (egui::Rect::from_min_max(egui::pos2(s.left(), s.top()), egui::pos2(s.left() + t, s.bottom())), Dir::West, egui::CursorIcon::ResizeHorizontal),
+            (egui::Rect::from_min_size(s.left_top(), egui::vec2(c, c)), Dir::NorthWest, egui::CursorIcon::ResizeNorthWest),
+            (egui::Rect::from_min_size(egui::pos2(s.right() - c, s.top()), egui::vec2(c, c)), Dir::NorthEast, egui::CursorIcon::ResizeNorthEast),
+            (egui::Rect::from_min_size(egui::pos2(s.left(), s.bottom() - c), egui::vec2(c, c)), Dir::SouthWest, egui::CursorIcon::ResizeSouthWest),
+            (egui::Rect::from_min_size(egui::pos2(s.right() - c, s.bottom() - c), egui::vec2(c, c)), Dir::SouthEast, egui::CursorIcon::ResizeSouthEast),
+        ];
+        for (i, (r, dir, cur)) in zones.iter().enumerate() {
+            let resp = ui.interact(*r, egui::Id::new(("win-resize", i)), egui::Sense::drag());
+            if resp.hovered() { ctx.set_cursor_icon(*cur); }
+            if resp.drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(*dir)); }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.prev_picking && !self.picking {
@@ -1548,18 +1713,13 @@ impl eframe::App for ScantoutApp {
         }
         self.prev_picking = self.picking;
         if ui.input(|i| i.viewport().close_requested()) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
             dbg_log(&format!("close requested: mini={} main_visible={}", self.mini, self.main_visible));
-            if self.mini {
-                self.mini_since = None;
-                self.mini_collapsing = None;
-                self.main_visible = false;
-                self.show_about = false;
-                self.save_cfg();
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            } else {
-                self.enter_mini(ui.ctx());
-            }
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.request_close(&ctx.clone());
+        }
+        if !self.mini {
+            self.title_bar(ui, &ctx);
+            Self::resize_handles(ui, &ctx);
         }
         if self.show_about {
             if self.about_tex.is_none() {
@@ -1784,49 +1944,7 @@ impl eframe::App for ScantoutApp {
                 self.exit_mini(ui.ctx());
             }
         } else {
-        // Barre de menu (accès aux fonctions du tray depuis la fenêtre)
-        ui.horizontal(|ui| {
-            ui.menu_button(egui::RichText::new("☰  Menu").strong(), |ui| {
-                if ui.button("Définir la zone…").clicked() { self.handle_menu_event("zone", &ctx); ui.close(); }
-                ui.separator();
-                if ui.checkbox(&mut self.auto_copy, "Copie auto dans le presse-papier").changed() { self.tray_opts.auto_copy.set_checked(self.auto_copy); self.save_cfg(); }
-                if ui.checkbox(&mut self.keep_history, "Conserver l'historique des captures").changed() { self.tray_opts.keep_history.set_checked(self.keep_history); self.save_cfg(); }
-                if ui.checkbox(&mut self.light_mode, "Thème clair").changed() { self.tray_opts.light.set_checked(self.light_mode); self.save_cfg(); }
-                if ui.checkbox(&mut self.always_on_top, "Toujours au premier plan").changed() { self.tray_opts.top.set_checked(self.always_on_top); ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal })); self.save_cfg(); }
-                if ui.checkbox(&mut self.hw_accel, "Accélération matérielle (GPU)").changed() { self.tray_opts.hw.set_checked(self.hw_accel); self.save_cfg(); }
-                if ui.checkbox(&mut self.decode_barcodes, "Décoder les codes-barres").changed() { self.tray_opts.barcode.set_checked(self.decode_barcodes); self.save_cfg(); }
-                if ui.checkbox(&mut self.auto_resize, "Adapter la fenêtre à la capture").changed() { self.tray_opts.resize.set_checked(self.auto_resize); self.save_cfg(); }
-                if ui.checkbox(&mut self.start_mini, "Réduire au lancement").changed() { self.tray_opts.start_mini.set_checked(self.start_mini); self.save_cfg(); }
-                let mut autostart = self.tray_opts.autostart.is_checked();
-                if ui.checkbox(&mut autostart, "Démarrer avec Windows").changed() { self.handle_menu_event("opt_autostart", &ctx); }
-                ui.separator();
-                ui.menu_button("Langue OCR", |ui| {
-                    for (key, label) in [("latin", "FR / EN (latin)"), ("zh", "中文 (chinois)"), ("ko", "한국어 (coréen)")] {
-                        let selected = ocr_lang_key(&self.ocr_lang) == key;
-                        if ui.selectable_label(selected, label).clicked() {
-                            let id = match key { "zh" => "lang_zh", "ko" => "lang_ko", _ => "lang_latin" };
-                            self.handle_menu_event(id, &ctx);
-                            ui.close();
-                        }
-                    }
-                });
-                ui.menu_button("Traduction (hors-ligne)", |ui| {
-                    if ui.checkbox(&mut self.trad_enabled, "Traduction activée").changed() { self.tray_opts.trad.set_checked(self.trad_enabled); self.save_cfg(); }
-                    if ui.button("Télécharger les modèles…").clicked() { self.handle_menu_event("trad_dl", &ctx); ui.close(); }
-                    if ui.button("Installer / MAJ le moteur (pip)…").clicked() { self.handle_menu_event("trad_pip", &ctx); ui.close(); }
-                });
-                ui.separator();
-                if ui.button("Effacer l'historique").clicked() { self.handle_menu_event("opt_clear", &ctx); ui.close(); }
-                ui.separator();
-                if ui.button("À propos…").clicked() { self.handle_menu_event("about", &ctx); ui.close(); }
-                if ui.button("Quitter").clicked() { self.handle_menu_event("quit", &ctx); }
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).small().weak());
-            });
-        });
-        ui.separator();
-        let mut trad_request: Option<String> = None;
+        let mut trad_request: Option<String> = None;let mut trad_request: Option<String> = None;
         let trad_source_before = self.trad_source.clone();
         ui.horizontal(|ui| {
             if self.trad_enabled {
