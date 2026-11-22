@@ -37,6 +37,11 @@ fn estimate_rows(text: &str, width_pts: f32) -> usize {
         .max(1)
 }
 
+fn window_height_for(rows: usize, _has_capture: bool, mon_h: f32) -> f32 {
+    let _ = _has_capture;
+    (rows as f32 * 19.0 + 290.0).clamp(340.0, (mon_h - 60.0).max(380.0))
+}
+
 fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let mon = monitors.iter().find(|m| monitor_key(m) == sel.monitor)
@@ -222,6 +227,7 @@ fn main() -> eframe::Result<()> {
                 win_pos: cfg.win_x.zip(cfg.win_y).map(|(x, y)| [x, y]),
                 win_size: cfg.win_w.zip(cfg.win_h).map(|(w, h)| [w, h]),
                 last_pos_save: None,
+                resize_rows: 0,
                 mini_flash: false,
                 mini_icon: None,
                 about_tex: None,
@@ -986,6 +992,7 @@ struct ScantoutApp {
     win_pos: Option<[i32; 2]>,
     win_size: Option<[f32; 2]>,
     last_pos_save: Option<std::time::Instant>,
+    resize_rows: usize,
     mini_flash: bool,
     mini_icon: Option<egui::TextureHandle>,
     about_tex: Option<egui::TextureHandle>,
@@ -1134,14 +1141,10 @@ impl ScantoutApp {
             let cur_w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width())).unwrap_or(460.0);
             let w = if self.auto_resize { (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0) } else { cur_w };
             let mon_h = ctx.input(|i| i.raw.screen_rect.map(|r| r.height())).unwrap_or(940.0);
-            let max_h = (mon_h - 60.0).max(380.0);
-            // 170px d'aperçu + ~110px de chrome (historique, barre du bas, marges) + 19/ligne
-            const CHROME: f32 = 290.0;
             let h = if result.is_empty() {
-                (size[1] as f32 / pp + 240.0).clamp(340.0, max_h)
+                (size[1] as f32 / pp + 240.0).clamp(340.0, (mon_h - 60.0).max(380.0))
             } else {
-                let rows = estimate_rows(&result, w) as f32;
-                (rows * 19.0 + CHROME).clamp(340.0, max_h)
+                window_height_for(estimate_rows(&result, w), true, mon_h)
             };
             if h > 0.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -2190,6 +2193,22 @@ impl eframe::App for ScantoutApp {
                 self.exit_mini(ui.ctx());
             }
         } else {
+        // Option « Adapter la fenêtre » : la hauteur suit le texte en direct
+        if self.auto_resize {
+            let w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width())).unwrap_or(0.0);
+            if w > 120.0 && !self.text.trim().is_empty() {
+                let rows = estimate_rows(&self.text, (w - 90.0).max(100.0));
+                if rows != self.resize_rows {
+                    self.resize_rows = rows;
+                    let mon_h = ctx.input(|i| i.raw.screen_rect.map(|r| r.height())).unwrap_or(940.0);
+                    let want = window_height_for(rows, self.capture.is_some(), mon_h);
+                    let cur_h = ctx.input(|i| i.viewport().inner_rect.map(|r| r.height())).unwrap_or(want);
+                    if (want - cur_h).abs() > 24.0 {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, want)));
+                    }
+                }
+            }
+        }
         let trad_source_before = self.trad_source.clone();
         // Bas de fenêtre épinglé d'abord : la zone de texte prend toute la hauteur restante
         egui::Panel::bottom("bottom_chrome")
@@ -2403,7 +2422,7 @@ impl eframe::App for ScantoutApp {
                 let avail_w = ui.available_width();
                 let avail_h = ui.available_height().max(120.0);
                 // lignes nécessaires pour remplir la hauteur visible, ou tout le texte si plus long
-                let viewport_rows = (avail_h / 19.0).ceil() as usize + 1;
+                let viewport_rows = ((avail_h - 8.0) / 18.0).floor().max(1.0) as usize;
                 let edit_rows = estimate_rows(&self.text, avail_w).max(viewport_rows).clamp(8, 400);
                 egui::ScrollArea::vertical().max_height(avail_h).show(ui, |ui| {
                     let mut edit = egui::TextEdit::multiline(&mut self.text)
