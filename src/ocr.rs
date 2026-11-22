@@ -238,7 +238,7 @@ fn layout_text(lines: &[OcrLine]) -> String {
         .collect();
     let multi = merged.iter().filter(|l| l.len() >= 2).count();
     let mappable = line_map.iter().flatten().count();
-    let is_table = clusters.len() >= 2 && mappable >= 3 && multi > 0 && mappable * 10 >= multi * 6;
+    let is_table = clusters.len() >= 3 && mappable >= 2 && multi > 0 && mappable * 10 >= multi * 6;
 
     if is_table {
         return merged
