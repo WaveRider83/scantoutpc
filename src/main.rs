@@ -138,19 +138,28 @@ fn main() -> eframe::Result<()> {
     }
 
     let saved_pos = if !cfg.start_mini {
-        cfg.win_x.zip(cfg.win_y).map(|(x, y)| {
-            let mon = 1920.0_f32; // bornage large; l'OS recale si multi-écran
-            let _ = mon;
-            (x.clamp(-32000, 32000), y.clamp(0, 32000))
-        })
+        cfg.win_x.zip(cfg.win_y)
+            .filter(|(x, y)| x.abs() < 10000 && y.abs() < 10000)
+            .map(|(x, y)| {
+                // ramène la position sauvegardée dans la zone de travail (hors barre des tâches)
+                match work_area_near(x as f32, y as f32) {
+                    Some((wa_x, wa_y, wa_w, wa_h)) => {
+                        let w = cfg.win_w.unwrap_or(460.0);
+                        let h = cfg.win_h.unwrap_or(360.0);
+                        let cx = (x as f32).clamp(wa_x, (wa_x + wa_w - w).max(wa_x));
+                        let cy = (y as f32).clamp(wa_y, (wa_y + wa_h - h).max(wa_y));
+                        (cx as i32, cy as i32)
+                    }
+                    None => (x, y),
+                }
+            })
     } else { None };
     let options = eframe::NativeOptions {
         viewport: {
             let vb = egui::ViewportBuilder::default()
             .with_title("ScantoutPC")
             .with_inner_size(if cfg.start_mini { [MINI_W, MINI_H] } else { cfg.win_w.zip(cfg.win_h).map(|(w, h)| [w.max(200.0), h.max(150.0)]).unwrap_or([460.0, 360.0]) });
-            let sane = saved_pos.filter(|(x, y)| x.abs() < 10000 && y.abs() < 10000);
-            let vb = if let Some((x, y)) = sane { vb.with_position([x as f32, y as f32]) } else { vb };
+            let vb = if let Some((x, y)) = saved_pos { vb.with_position([x as f32, y as f32]) } else { vb };
             vb
             .with_min_inner_size([MINI_W, MINI_H])
             .with_decorations(false)
