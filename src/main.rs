@@ -1137,7 +1137,7 @@ impl ScantoutApp {
                 if self.auto_resize { (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0) } else { cur_w.min(0.0) } // 0 = pas de resize
             } else {
                 let rows = estimate_rows(&result, w).clamp(6, 34);
-                (250.0 + rows as f32 * 19.0).clamp(360.0, 950.0)
+                (280.0 + rows as f32 * 20.5).clamp(380.0, 950.0)
             };
             if h > 0.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -2215,7 +2215,9 @@ impl eframe::App for ScantoutApp {
             ui.vertical(|ui| {
                 let avail_w = ui.available_width();
                 let edit_rows = estimate_rows(&self.text, avail_w).clamp(8, 30);
-                egui::ScrollArea::vertical().max_height(540.0).show(ui, |ui| {
+                let inner_h = ui.ctx().input(|i| i.viewport().inner_rect.map(|r| r.height())).unwrap_or(360.0);
+                let text_max_h = (inner_h - 250.0).clamp(150.0, 700.0);
+                egui::ScrollArea::vertical().max_height(text_max_h).show(ui, |ui| {
                     let mut edit = egui::TextEdit::multiline(&mut self.text)
                         .desired_width(ui.available_width())
                         .desired_rows(edit_rows)
