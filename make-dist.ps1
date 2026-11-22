@@ -1,7 +1,7 @@
-# Construit la distribution portable ScantoutPC (zip de base, latin only) + packs zh/ko.
+﻿# Construit la distribution portable ScantoutPC (zip de base, latin only) + packs zh/ko.
 # Usage : .\make-dist.ps1 [-Version 0.2.0]
 param([string]$Version = "0.2.8")
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 $log = Join-Path $PSScriptRoot "make-dist-latest.log"
 "=== make-dist $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') v$Version ===" | ForEach-Object { $_; Set-Content -Path $log -Value $_ -Encoding utf8 }
