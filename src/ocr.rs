@@ -103,20 +103,23 @@ impl OcrEngine {
         regs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let mut lines: Vec<(f32, f32, Vec<(f32, String)>)> = Vec::new(); // (y_min, y_max, fragments)
         for (y0, y1, x, text) in regs {
-            let mut placed = false;
-            for line in lines.iter_mut() {
+            let mut placement = None;
+            for (i, line) in lines.iter().enumerate() {
                 let overlap = line.1.min(y1) - line.0.max(y0);
                 let min_h = (line.1 - line.0).min(y1 - y0);
                 if min_h > 0.0 && overlap / min_h > 0.5 {
-                    line.2.push((x, text));
-                    line.0 = line.0.min(y0);
-                    line.1 = line.1.max(y1);
-                    placed = true;
+                    placement = Some(i);
                     break;
                 }
             }
-            if !placed {
-                lines.push((y0, y1, vec![(x, text)]));
+            match placement {
+                Some(i) => {
+                    let line = &mut lines[i];
+                    line.2.push((x, text));
+                    line.0 = line.0.min(y0);
+                    line.1 = line.1.max(y1);
+                }
+                None => lines.push((y0, y1, vec![(x, text)])),
             }
         }
         lines.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
