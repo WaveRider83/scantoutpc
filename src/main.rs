@@ -1169,6 +1169,13 @@ impl ScantoutApp {
     /// (La fenêtre doit rester "visible" pour egui — les overlays sont ses enfants —
     /// donc on la déplace hors du champ de vision plutôt que de la cacher.)
     fn begin_pick(&mut self, ctx: &egui::Context) {
+        // annule toute réduction mini en cours et garantit la fenêtre visible
+        self.mini_collapsing = None;
+        self.mini_since = Some(std::time::Instant::now());
+        self.main_visible = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(if self.mini { egui::vec2(MINI_W, MINI_H) } else { egui::vec2(self.win_size.map(|s| s[0]).unwrap_or(460.0), self.win_size.map(|s| s[1]).unwrap_or(360.0)) }));
         if self.capture_hidden_pos.is_none() {
             if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
                 self.capture_hidden_pos = Some(r.min);
@@ -1656,7 +1663,12 @@ impl eframe::App for ScantoutApp {
             let h = (MINI_H * (1.0 - p)).max(1.0);
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, h)));
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
-            if p >= 1.0 {
+            if p >= 1.0 && !self.can_hide() {
+                // un pick a démarré entre-temps : abandonner la réduction
+                self.mini_collapsing = None;
+                self.mini_since = Some(std::time::Instant::now());
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
+            } else if p >= 1.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MINI_W, MINI_H)));
                 self.mini_collapsing = None;
