@@ -1354,16 +1354,19 @@ impl ScantoutApp {
 
     fn title_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let dark = ui.visuals().dark_mode;
-        let bar_bg = if dark { egui::Color32::from_rgb(26, 27, 33) } else { egui::Color32::from_rgb(236, 236, 241) };
-        let line = if dark { egui::Color32::from_rgb(52, 53, 62) } else { egui::Color32::from_rgb(213, 213, 220) };
+        let bar_bg = if dark { egui::Color32::from_rgb(25, 26, 32) } else { egui::Color32::from_rgb(238, 238, 242) };
+        let line = if dark { egui::Color32::from_rgb(56, 57, 68) } else { egui::Color32::from_rgb(210, 210, 218) };
         let fg = ui.visuals().text_color();
-        let bar_h = 38.0;
+        let muted = ui.visuals().weak_text_color();
+        let bar_h = 40.0;
         let full_w = ui.available_width();
         let (rect, bar) = ui.allocate_exact_size(egui::vec2(full_w, bar_h), egui::Sense::click_and_drag());
         {
             let painter = ui.painter();
             painter.rect_filled(rect, 0.0, bar_bg);
-            painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, line));
+            // liseré accentué en bas de la barre
+            painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(2.0, egui::Color32::from_rgb(245, 130, 55)));
+            let _ = line;
         }
         if bar.drag_started() {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -1372,7 +1375,7 @@ impl ScantoutApp {
             let max = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
         }
-        // icône + titre
+        // icône (chargée paresseusement)
         if self.title_icon.is_none() {
             if let Ok(img) = image::load_from_memory(include_bytes!("../assets/icon_32.png")) {
                 let rgba = img.to_rgba8();
@@ -1381,26 +1384,37 @@ impl ScantoutApp {
                 self.title_icon = Some(ui.ctx().load_texture("title-icon", color, egui::TextureOptions::LINEAR));
             }
         }
-        let mut x = rect.left() + 10.0;
-        if let Some(tex) = &self.title_icon {
-            let r = egui::Rect::from_min_size(egui::pos2(x, rect.center().y - 9.0), egui::vec2(18.0, 18.0));
-            ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
-            x += 26.0;
+        // zone gauche : icône + nom + version + menu
+        if self.title_icon.is_some() {
+            let r = egui::Rect::from_min_size(egui::pos2(rect.left() + 12.0, rect.center().y - 10.0), egui::vec2(20.0, 20.0));
+            ui.painter().image(self.title_icon.as_ref().unwrap().id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
-        ui.painter().text(egui::pos2(x, rect.center().y - 6.0), egui::Align2::LEFT_CENTER, "ScantoutPC", egui::FontId::proportional(13.0), fg);
-        ui.painter().text(egui::pos2(x, rect.center().y + 7.0), egui::Align2::LEFT_CENTER, concat!("v", env!("CARGO_PKG_VERSION")), egui::FontId::proportional(9.0), ui.visuals().weak_text_color());
-        // boutons fenêtre (droite -> gauche) : menu, min, max, close
-        let btn = 44.0;
+        let mut left = ui.new_child(egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_max(egui::pos2(rect.left() + 40.0, rect.top()), egui::pos2(rect.left() + 320.0, rect.bottom())))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)));
+        left.label(egui::RichText::new("ScantoutPC").strong().size(13.5).color(fg));
+        left.add_space(6.0);
+        left.menu_button(egui::RichText::new("☰  Menu").strong(), |ui| self.menu_contents(ui, ctx));
+        // zone droite : À propos + boutons fenêtre
+        let btn = 46.0;
+        let right_w = btn * 3.0 + 120.0;
+        let mut right = ui.new_child(egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_max(egui::pos2(rect.right() - right_w, rect.top()), egui::pos2(rect.right() - 3.0 * btn, rect.bottom())))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)));
+        // version (extrême droite, à côté des boutons fenêtre)
+        right.label(egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).size(10.0).color(muted));
+        right.add_space(8.0);
+        // boutons fenêtre dessinés à la main (à droite)
         let close_r = egui::Rect::from_min_size(egui::pos2(rect.right() - btn, rect.top()), egui::vec2(btn, bar_h));
         let max_r = close_r.translate(egui::vec2(-btn, 0.0));
         let min_r = max_r.translate(egui::vec2(-btn, 0.0));
-        let menu_w = 96.0;
-        let menu_r = min_r.translate(egui::vec2(-menu_w - 4.0, 0.0));
-        // menu ☰
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(menu_r).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        child.menu_button(egui::RichText::new("☰  Menu").strong(), |ui| self.menu_contents(ui, ctx));
-        drop(child);
-        // min
+        right.vertical_centered(|ui| {
+            ui.add_space(6.0);
+            if ui.add(egui::Button::new(egui::RichText::new("À propos").size(11.0).color(fg)).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::new(1.0, line)).corner_radius(4.0)).clicked() {
+                self.handle_menu_event("about", ctx);
+            }
+        });
+        // min / max / close
         let min_resp = ui.interact(min_r, egui::Id::new("tb-min"), egui::Sense::click());
         if min_resp.hovered() { ui.painter().rect_filled(min_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
         {
@@ -1408,7 +1422,6 @@ impl ScantoutApp {
             ui.painter().line_segment([egui::pos2(c.x - 5.0, c.y + 0.5), egui::pos2(c.x + 5.0, c.y + 0.5)], egui::Stroke::new(1.6, fg));
         }
         if min_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); }
-        // max / restore
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
         let max_resp = ui.interact(max_r, egui::Id::new("tb-max"), egui::Sense::click());
         if max_resp.hovered() { ui.painter().rect_filled(max_r, 0.0, ui.visuals().widgets.hovered.bg_fill); }
@@ -1424,7 +1437,7 @@ impl ScantoutApp {
             }
         }
         if max_resp.clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized)); }
-        // close
+        let close_r = close_r;
         let close_resp = ui.interact(close_r, egui::Id::new("tb-close"), egui::Sense::click());
         let close_hover = close_resp.hovered();
         if close_hover { ui.painter().rect_filled(close_r, 0.0, egui::Color32::from_rgb(232, 17, 35)); }
