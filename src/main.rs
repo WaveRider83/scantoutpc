@@ -1262,9 +1262,20 @@ impl ScantoutApp {
 
     fn end_pick_restore(&mut self, ctx: &egui::Context) {
         if let Some(p) = self.capture_hidden_pos.take() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+            // Ramène la position mémorisée dans la zone de travail (clamp déterministe,
+            // sans lire le rect courant qui est périmé juste après le parking).
+            let target = match work_area_near(p.x, p.y) {
+                Some((wa_x, wa_y, wa_w, wa_h)) => {
+                    let keep = 120.0f32; // garantir au moins 120px visibles
+                    egui::pos2(
+                        p.x.clamp(wa_x - 0.0, (wa_x + wa_w - keep).max(wa_x)).max(wa_x - keep + 0.0).min(wa_x + wa_w - keep),
+                        p.y.clamp(wa_y, (wa_y + wa_h - keep).max(wa_y)),
+                    )
+                }
+                None => p,
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(target));
         }
-        self.ensure_on_screen(ctx);
     }
 
     fn handle_menu_event(&mut self, id: &str, ctx: &egui::Context) {
