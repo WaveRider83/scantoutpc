@@ -27,6 +27,16 @@ fn monitor_key(m: &xcap::Monitor) -> String {
     m.name().unwrap_or_else(|_| "?".into())
 }
 
+
+/// Estime le nombre de lignes visuelles d'un texte (retour à la ligne automatique inclus).
+fn estimate_rows(text: &str, width_pts: f32) -> usize {
+    let cpl = (((width_pts - 56.0) / 8.0) as usize).max(20);
+    text.lines()
+        .map(|l| ((l.chars().count() + cpl - 1) / cpl).max(1))
+        .sum::<usize>()
+        .max(1)
+}
+
 fn capture_zone(sel: &PickedZone) -> Result<image::RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let mon = monitors.iter().find(|m| monitor_key(m) == sel.monitor)
@@ -1031,13 +1041,6 @@ impl ScantoutApp {
             self.enter_mini(ctx);
             self.mini_flash = true;
         }
-        if self.auto_resize && show_texture {
-            let pp = ctx.pixels_per_point();
-            let w = (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0);
-            let h = (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0);
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
-            dbg_log(&format!("auto-resize {w}x{h}"));
-        }
         let dynimg = image::DynamicImage::ImageRgba8(img);
         let barcode_hit = if self.decode_barcodes {
             barcode::decode(&dynimg)
@@ -1123,6 +1126,22 @@ impl ScantoutApp {
                         self.status = e;
                     }
                 }
+            }
+        }
+        // Hauteur adaptée à la longueur du texte OCR ; largeur selon l'option « Adapter la fenêtre »
+        if show_texture {
+            let pp = ctx.pixels_per_point();
+            let cur_w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width())).unwrap_or(460.0);
+            let w = if self.auto_resize { (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0) } else { cur_w };
+            let h = if result.is_empty() {
+                if self.auto_resize { (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0) } else { cur_w.min(0.0) } // 0 = pas de resize
+            } else {
+                let rows = estimate_rows(&result, w).clamp(6, 34);
+                (250.0 + rows as f32 * 19.0).clamp(360.0, 950.0)
+            };
+            if h > 0.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+                dbg_log(&format!("auto-resize texte → {w}x{h}"));
             }
         }
         result
@@ -2194,10 +2213,12 @@ impl eframe::App for ScantoutApp {
                 });
             }
             ui.vertical(|ui| {
-                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                let avail_w = ui.available_width();
+                let edit_rows = estimate_rows(&self.text, avail_w).clamp(8, 30);
+                egui::ScrollArea::vertical().max_height(540.0).show(ui, |ui| {
                     let mut edit = egui::TextEdit::multiline(&mut self.text)
                         .desired_width(ui.available_width())
-                        .desired_rows(10)
+                        .desired_rows(edit_rows)
                         .hint_text("Le texte capturé apparaîtra ici…");
                     if self.layout_keep {
                         edit = edit.font(egui::TextStyle::Monospace);
