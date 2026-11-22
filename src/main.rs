@@ -2395,9 +2395,12 @@ impl eframe::App for ScantoutApp {
                 });
             }
             ui.vertical(|ui| {
-                let text_max_h = ui.available_height().max(120.0);
-                let edit_rows = estimate_rows(&self.text, ui.available_width()).clamp(8, 80);
-                egui::ScrollArea::vertical().max_height(text_max_h).show(ui, |ui| {
+                let avail_w = ui.available_width();
+                let avail_h = ui.available_height().max(120.0);
+                // lignes nécessaires pour remplir la hauteur visible, ou tout le texte si plus long
+                let viewport_rows = (avail_h / 19.0).ceil() as usize + 1;
+                let edit_rows = estimate_rows(&self.text, avail_w).max(viewport_rows).clamp(8, 400);
+                egui::ScrollArea::vertical().max_height(avail_h).show(ui, |ui| {
                     let mut edit = egui::TextEdit::multiline(&mut self.text)
                         .desired_width(ui.available_width())
                         .desired_rows(edit_rows)
