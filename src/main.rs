@@ -206,6 +206,9 @@ fn main() -> eframe::Result<()> {
                 pack_rx: None,
                 pack_pending_lang: None,
                 show_about: false,
+                menu_open: false,
+                menu_toggled_frame: false,
+                menu_restore_size: None,
                 win_pos: cfg.win_x.zip(cfg.win_y).map(|(x, y)| [x, y]),
                 win_size: cfg.win_w.zip(cfg.win_h).map(|(w, h)| [w, h]),
                 last_pos_save: None,
@@ -967,6 +970,9 @@ struct ScantoutApp {
     pack_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     pack_pending_lang: Option<String>,
     show_about: bool,
+    menu_open: bool,
+    menu_toggled_frame: bool,
+    menu_restore_size: Option<egui::Vec2>,
     win_pos: Option<[i32; 2]>,
     win_size: Option<[f32; 2]>,
     last_pos_save: Option<std::time::Instant>,
@@ -1494,7 +1500,7 @@ impl ScantoutApp {
     }
 
     fn menu_contents(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if ui.button("Définir la zone…").clicked() { self.handle_menu_event("zone", ctx); ui.close(); }
+        if ui.button("Définir la zone…").clicked() { self.handle_menu_event("zone", ctx); self.menu_open = false; }
         ui.separator();
         if ui.checkbox(&mut self.auto_copy, "Copie auto dans le presse-papier").changed() { self.tray_opts.auto_copy.set_checked(self.auto_copy); self.save_cfg(); }
         if ui.checkbox(&mut self.keep_history, "Conserver l'historique des captures").changed() { self.tray_opts.keep_history.set_checked(self.keep_history); self.save_cfg(); }
@@ -1513,19 +1519,19 @@ impl ScantoutApp {
                 if ui.selectable_label(selected, label).clicked() {
                     let id = match key { "zh" => "lang_zh", "ko" => "lang_ko", _ => "lang_latin" };
                     self.handle_menu_event(id, ctx);
-                    ui.close();
+                    self.menu_open = false;
                 }
             }
         });
         ui.menu_button("Traduction (hors-ligne)", |ui| {
             if ui.checkbox(&mut self.trad_enabled, "Traduction activée").changed() { self.tray_opts.trad.set_checked(self.trad_enabled); self.save_cfg(); }
-            if ui.button("Télécharger les modèles…").clicked() { self.handle_menu_event("trad_dl", ctx); ui.close(); }
-            if ui.button("Installer / MAJ le moteur (pip)…").clicked() { self.handle_menu_event("trad_pip", ctx); ui.close(); }
+            if ui.button("Télécharger les modèles…").clicked() { self.handle_menu_event("trad_dl", ctx); self.menu_open = false; }
+            if ui.button("Installer / MAJ le moteur (pip)…").clicked() { self.handle_menu_event("trad_pip", ctx); self.menu_open = false; }
         });
         ui.separator();
-        if ui.button("Effacer l'historique").clicked() { self.handle_menu_event("opt_clear", ctx); ui.close(); }
+        if ui.button("Effacer l'historique").clicked() { self.handle_menu_event("opt_clear", ctx); self.menu_open = false; }
         ui.separator();
-        if ui.button("À propos…").clicked() { self.handle_menu_event("about", ctx); ui.close(); }
+        if ui.button("À propos…").clicked() { self.handle_menu_event("about", ctx); self.menu_open = false; }
         if ui.button("Quitter").clicked() { self.handle_menu_event("quit", ctx); }
     }
 
@@ -1568,7 +1574,10 @@ impl ScantoutApp {
         let mut left = ui.new_child(egui::UiBuilder::new()
             .max_rect(egui::Rect::from_min_max(egui::pos2(rect.left() + 40.0, rect.top()), egui::pos2(rect.left() + 40.0 + left_w, rect.bottom())))
             .layout(egui::Layout::left_to_right(egui::Align::Center)));
-        left.menu_button(egui::RichText::new("ScantoutPC  ▾").strong().size(13.5).color(fg), |ui| self.menu_contents(ui, ctx));
+        if left.button(egui::RichText::new("ScantoutPC  ▾").strong().size(13.5).color(fg)).clicked() {
+            self.menu_open = !self.menu_open;
+            self.menu_toggled_frame = true;
+        }
         // zone droite : À propos + version (adaptative), puis boutons fenêtre
         let btn = 46.0;
         let show_about = full_w >= 460.0;
@@ -1897,6 +1906,45 @@ impl eframe::App for ScantoutApp {
         if !self.mini {
             self.title_bar(ui, &ctx);
             Self::resize_handles(ui, &ctx);
+        }
+        if self.menu_open {
+            // agrandit la fenêtre si besoin pour que le menu soit entièrement visible
+            let (cw, ch) = ui.ctx().input(|i| i.viewport().inner_rect.map(|r| (r.width(), r.height())).unwrap_or((460.0, 360.0)));
+            const NEED_W: f32 = 360.0;
+            const NEED_H: f32 = 560.0;
+            if cw < NEED_W || ch < NEED_H {
+                if self.menu_restore_size.is_none() {
+                    self.menu_restore_size = Some(egui::vec2(cw, ch));
+                }
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cw.max(NEED_W), ch.max(NEED_H))));
+            }
+            let menu_ctx = ui.ctx().clone();
+            let mut menu_rect: Option<egui::Rect> = None;
+            egui::Area::new(egui::Id::new("main_menu_panel"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(6.0, 44.0))
+                .show(&menu_ctx, |ui| {
+                    let r = egui::Frame::popup(ui.ctx().style()).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(NEED_H - 60.0).show(ui, |ui| {
+                            self.menu_contents(ui, &menu_ctx);
+                        });
+                    });
+                    menu_rect = Some(r.response.rect);
+                });
+            let just_toggled = std::mem::take(&mut self.menu_toggled_frame);
+            let esc = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+            let click_outside = ui.ctx().input(|i| {
+                i.pointer.any_click()
+                    && match (i.pointer.interact_pos(), menu_rect) {
+                        (Some(p), Some(r)) => !r.contains(p),
+                        _ => false,
+                    }
+            });
+            if esc || (!just_toggled && click_outside) {
+                self.menu_open = false;
+            }
+        } else if let Some(prev) = self.menu_restore_size.take() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(prev));
         }
         if self.show_about {
             if self.about_tex.is_none() {
