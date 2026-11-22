@@ -17,3 +17,5 @@ kanban/
 dist/
 *.bak
 *.bak*
+build-latest.log
+make-dist-latest.log

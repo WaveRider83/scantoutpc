@@ -1,16 +1,19 @@
 # Construit la distribution portable ScantoutPC (zip de base, latin only) + packs zh/ko.
 # Usage : .\make-dist.ps1 [-Version 0.2.0]
-param([string]$Version = "0.2.0")
+param([string]$Version = "0.2.6")
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+$log = Join-Path $PSScriptRoot "make-dist-latest.log"
+"=== make-dist $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') v$Version ===" | Tee-Object -FilePath $log
 $dist = Join-Path $PSScriptRoot "dist"
 $stage = Join-Path $dist "ScantoutPC"
 Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $stage "models") | Out-Null
 
-Write-Host "Build release..."; cargo build --release
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+Write-Host "Build release..." | Tee-Object -FilePath $log -Append
+cargo build --release 2>&1 | Tee-Object -FilePath $log -Append
+if ($LASTEXITCODE -ne 0) { "BUILD ECHEC (code $LASTEXITCODE)" | Tee-Object -FilePath $log -Append; throw "cargo build failed" }
 
 Copy-Item "target\release\scantoutpc.exe" $stage
 # ORT DLL (CPU) — les .so Linux ne sont pas embarqués
@@ -32,6 +35,6 @@ $zip = Join-Path $dist "ScantoutPC-$Version-portable.zip"
 Compress-Archive -Path $stage -DestinationPath $zip -Force
 $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
 "$hash  ScantoutPC-$Version-portable.zip" | Out-File -Encoding ascii (Join-Path $dist "SHA256SUMS.txt")
-Write-Host "OK : $zip"
-Write-Host "SHA256: $hash"
-Write-Host "Packs zh/ko dans dist\packs (a uploader sur la release GitHub : gh release upload v<ver> dist\packs\*)"
+"OK : $zip" | Tee-Object -FilePath $log -Append
+"SHA256: $hash" | Tee-Object -FilePath $log -Append
+"Packs zh/ko dans dist\packs (a uploader sur la release GitHub : gh release upload v$Version dist\packs\*)" | Tee-Object -FilePath $log -Append
