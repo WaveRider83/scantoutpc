@@ -1268,7 +1268,7 @@ impl ScantoutApp {
                 Some((wa_x, wa_y, wa_w, wa_h)) => {
                     let keep = 120.0f32; // garantir au moins 120px visibles
                     egui::pos2(
-                        p.x.clamp(wa_x - 0.0, (wa_x + wa_w - keep).max(wa_x)).max(wa_x - keep + 0.0).min(wa_x + wa_w - keep),
+                        p.x.clamp(wa_x, (wa_x + wa_w - keep).max(wa_x)),
                         p.y.clamp(wa_y, (wa_y + wa_h - keep).max(wa_y)),
                     )
                 }
