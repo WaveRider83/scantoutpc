@@ -83,12 +83,49 @@ impl OcrEngine {
             .engine
             .predict(vec![rgb])
             .map_err(|e| format!("OCR: {e}"))?;
-        let text = results
+        // Le moteur rend des *régions*, pas des lignes : une même ligne visuelle
+        // peut être découpée en plusieurs boîtes. On regroupe par chevauchement
+        // vertical (> 50 % de la hauteur min, comme le détecteur), triées par x.
+        let mut regs: Vec<(f32, f32, f32, String)> = results
             .into_iter()
             .flat_map(|r| r.text_regions.into_iter())
-            .filter_map(|r| r.text)
-            .map(|t| t.to_string())
-            .map(|t| postprocess_line(t.to_string()))
+            .filter_map(|r| {
+                r.text.map(|t| {
+                    (
+                        r.bounding_box.y_min(),
+                        r.bounding_box.y_max(),
+                        r.bounding_box.x_min(),
+                        t.to_string(),
+                    )
+                })
+            })
+            .collect();
+        regs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut lines: Vec<(f32, f32, Vec<(f32, String)>)> = Vec::new(); // (y_min, y_max, fragments)
+        for (y0, y1, x, text) in regs {
+            let mut placed = false;
+            for line in lines.iter_mut() {
+                let overlap = line.1.min(y1) - line.0.max(y0);
+                let min_h = (line.1 - line.0).min(y1 - y0);
+                if min_h > 0.0 && overlap / min_h > 0.5 {
+                    line.2.push((x, text));
+                    line.0 = line.0.min(y0);
+                    line.1 = line.1.max(y1);
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                lines.push((y0, y1, vec![(x, text)]));
+            }
+        }
+        lines.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let text = lines
+            .into_iter()
+            .map(|(_, _, mut parts)| {
+                parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                postprocess_line(parts.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join(" "))
+            })
             .collect::<Vec<_>>()
             .join("\n");
         Ok(text)
