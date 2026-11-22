@@ -147,7 +147,8 @@ fn main() -> eframe::Result<()> {
             let vb = egui::ViewportBuilder::default()
             .with_title("ScantoutPC")
             .with_inner_size(if cfg.start_mini { [MINI_W, MINI_H] } else { cfg.win_w.zip(cfg.win_h).map(|(w, h)| [w.max(200.0), h.max(150.0)]).unwrap_or([460.0, 360.0]) });
-            let vb = if let Some((x, y)) = saved_pos { vb.with_position([x as f32, y as f32]) } else { vb };
+            let sane = saved_pos.filter(|(x, y)| x.abs() < 10000 && y.abs() < 10000);
+            let vb = if let Some((x, y)) = sane { vb.with_position([x as f32, y as f32]) } else { vb };
             vb
             .with_min_inner_size([MINI_W, MINI_H])
             .with_decorations(false)
@@ -1155,7 +1156,7 @@ impl ScantoutApp {
             self.main_visible = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             if !self.mini {
-                if let Some(p) = self.win_pos {
+                if let Some(p) = self.win_pos.filter(|p| p[0].abs() < 10000 && p[1].abs() < 10000) {
                     dbg_log(&format!("restore pos {},{}", p[0], p[1]));
                     ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(p[0] as f32, p[1] as f32)));
                 }
@@ -1489,7 +1490,7 @@ impl eframe::App for ScantoutApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.mini && self.main_visible && self.mini_collapsing.is_none() {
+        if !self.mini && self.main_visible && self.mini_collapsing.is_none() && self.capture_hidden_pos.is_none() && !self.picking {
             if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
                 if r.width() < 100.0 || r.height() < 80.0 {
                     // fenêtre en cours de réduction : ne pas mémoriser
