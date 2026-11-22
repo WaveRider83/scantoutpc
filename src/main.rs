@@ -1143,6 +1143,36 @@ impl ScantoutApp {
         !self.picking && self.overlay_shots.is_none()
     }
 
+    /// Garantit que la fenêtre est visible sur un écran : si sa position courante est hors
+    /// limites (ou inconnue), on la ramène dans les bornes du moniteur.
+    fn ensure_on_screen(&self, ctx: &egui::Context) {
+        let mon = ctx
+            .input(|i| i.viewport().monitor_size)
+            .unwrap_or(egui::vec2(1920.0, 1080.0));
+        let r = match ctx.input(|i| i.viewport().outer_rect) {
+            Some(r) => r,
+            None => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                    (mon.x - MINI_W - 10.0).max(0.0),
+                    (mon.y - MINI_H - 46.0).max(0.0),
+                )));
+                return;
+            }
+        };
+        let off = r.max.x < 40.0
+            || r.min.x > mon.x - 40.0
+            || r.max.y < 40.0
+            || r.min.y > mon.y - 40.0;
+        if off {
+            let w = r.width().min(mon.x);
+            let h = r.height().min(mon.y);
+            let x = r.min.x.clamp(0.0, (mon.x - w).max(0.0));
+            let y = r.min.y.clamp(0.0, (mon.y - h).max(0.0));
+            dbg_log(&format!("ensure_on_screen: ({:.0},{:.0}) hors écran -> ({:.0},{:.0})", r.min.x, r.min.y, x, y));
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
+        }
+    }
+
     fn toggle_main(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         dbg_log(&format!("tray toggle: mini={} main_visible={} minimized={}", self.mini, self.main_visible, minimized));
@@ -1172,6 +1202,7 @@ impl ScantoutApp {
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
+            self.ensure_on_screen(ctx);
         }
     }
 
@@ -1200,6 +1231,7 @@ impl ScantoutApp {
         if let Some(p) = self.capture_hidden_pos.take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
         }
+        self.ensure_on_screen(ctx);
     }
 
     fn handle_menu_event(&mut self, id: &str, ctx: &egui::Context) {
@@ -1717,6 +1749,7 @@ impl eframe::App for ScantoutApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.ensure_on_screen(ctx);
                 }
             }
         }
