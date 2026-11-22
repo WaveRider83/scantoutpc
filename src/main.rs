@@ -1153,6 +1153,153 @@ impl ScantoutApp {
             }
         }
     }
+
+    /// Masque la fenêtre principale en la parquant hors écrans, puis lance la sélection de zone.
+    /// (La fenêtre doit rester "visible" pour egui — les overlays sont ses enfants —
+    /// donc on la déplace hors du champ de vision plutôt que de la cacher.)
+    fn begin_pick(&mut self, ctx: &egui::Context) {
+        if self.capture_hidden_pos.is_none() {
+            if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
+                self.capture_hidden_pos = Some(r.min);
+            }
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-30000.0, -30000.0)));
+        self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+        dbg_log("begin_pick: window parked off-screen");
+    }
+
+    fn end_pick_restore(&mut self, ctx: &egui::Context) {
+        if let Some(p) = self.capture_hidden_pos.take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+        }
+    }
+
+    fn handle_menu_event(&mut self, id: &str, ctx: &egui::Context) {
+            match id {
+                "toggle" => self.toggle_main(ctx),
+                "zone" => self.begin_pick(ctx),
+                "quit" => { self.save_cfg(); std::process::exit(0); }
+                "about" => {
+                    self.exit_mini(ctx);
+                    self.show_about = true;
+                    if self.update_info.is_none() && self.update_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || { let _ = tx.send(check_latest_release()); });
+                        self.update_rx = Some(rx);
+                    }
+                }
+                "opt_auto" => {
+                    self.auto_copy = !self.auto_copy;
+                    self.tray_opts.auto_copy.set_checked(self.auto_copy);
+                    self.save_cfg();
+                }
+                "opt_keep" => {
+                    self.keep_history = !self.keep_history;
+                    self.tray_opts.keep_history.set_checked(self.keep_history);
+                    self.save_cfg();
+                }
+                "opt_autostart" => {
+                    let want = !self.tray_opts.autostart.is_checked();
+                    let ok = set_autostart(want);
+                    self.tray_opts.autostart.set_checked(if ok { want } else { autostart_enabled() });
+                }
+                "opt_start_mini" => {
+                    self.start_mini = !self.start_mini;
+                    self.tray_opts.start_mini.set_checked(self.start_mini);
+                    self.save_cfg();
+                }
+                "opt_resize" => {
+                    self.auto_resize = !self.auto_resize;
+                    self.tray_opts.resize.set_checked(self.auto_resize);
+                    self.save_cfg();
+                }
+                "opt_barcode" => {
+                    self.decode_barcodes = !self.decode_barcodes;
+                    self.tray_opts.barcode.set_checked(self.decode_barcodes);
+                    self.save_cfg();
+                }
+                "opt_hw" => {
+                    self.hw_accel = !self.hw_accel;
+                    self.tray_opts.hw.set_checked(self.hw_accel);
+                    self.status = if self.hw_accel { "capture GPU (WGC) activée".into() } else { "capture GDI (CPU) — GPU au repos".into() };
+                    self.save_cfg();
+                }
+                "opt_trad" => {
+                    self.trad_enabled = !self.trad_enabled;
+                    self.tray_opts.trad.set_checked(self.trad_enabled);
+                    self.status = if self.trad_enabled { "traduction activée (hors-ligne)".into() } else { "traduction désactivée".into() };
+                    self.save_cfg();
+                }
+                "trad_dl" => {
+                    if self.trad_rx.is_none() {
+                        let langs = self.trad_langs.clone();
+                        if langs.is_empty() {
+                            self.status = "coche d'abord des langues (Options → Langues proposées)".into();
+                        } else {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            std::thread::spawn(move || { let _ = tx.send(TradEvent::Finished(translate::install_models(&langs))); });
+                            self.trad_rx = Some(rx);
+                            self.trad_busy = true;
+                            self.status = "téléchargement des modèles de traduction…".into();
+                        }
+                    }
+                }
+                "trad_pip" => {
+                    if self.trad_rx.is_none() {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || { let _ = tx.send(TradEvent::Finished(translate::pip_install())); });
+                        self.trad_rx = Some(rx);
+                        self.trad_busy = true;
+                        self.status = "pip install argostranslate…".into();
+                    }
+                }
+                "opt_top" => {
+                    self.always_on_top = !self.always_on_top;
+                    self.tray_opts.top.set_checked(self.always_on_top);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal }));
+                    self.save_cfg();
+                }
+                "opt_light" => {
+                    self.light_mode = !self.light_mode;
+                    self.tray_opts.light.set_checked(self.light_mode);
+                    self.save_cfg();
+                }
+                "opt_clear" => {
+                    clear_history_files();
+                    self.hist_tex.clear();
+                    self.status = "historique effacé".into();
+                }
+                ev if ev.starts_with("trad_lang_") => {
+                    let code = ev.trim_start_matches("trad_lang_").to_string();
+                    if let Some(item) = self.tray_opts.trad_langs.iter().find(|(c, _)| *c == code).map(|(_, i)| i.clone()) {
+                        if self.trad_langs.contains(&code) {
+                            self.trad_langs.retain(|c| c != &code);
+                            item.set_checked(false);
+                        } else {
+                            self.trad_langs.push(code.clone());
+                            item.set_checked(true);
+                        }
+                        self.save_cfg();
+                    }
+                }
+                "lang_latin" | "lang_zh" | "lang_ko" => {
+                    let key = match id { "lang_zh" => "zh", "lang_ko" => "ko", _ => "latin" };
+                    if key != "latin" && !pack_installed(key) {
+                        if self.pack_rx.is_none() {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            let k = key.to_string();
+                            std::thread::spawn(move || { let _ = tx.send(download_pack(&k)); });
+                            self.pack_rx = Some(rx);
+                            self.pack_pending_lang = Some(key.to_string());
+                            self.status = format!("téléchargement du pack {}…", key);
+                        }
+                    } else {
+                        self.set_ocr_lang(key);
+                    }
+                }
+                _ => {}
+            }
+    }
 }
 
 impl eframe::App for ScantoutApp {
@@ -1390,153 +1537,6 @@ impl eframe::App for ScantoutApp {
         }
     }
 
-
-    /// Masque la fenêtre principale en la parquant hors écrans, puis lance la sélection de zone.
-    /// (La fenêtre doit rester "visible" pour egui — les overlays sont ses enfants —
-    /// donc on la déplace hors du champ de vision plutôt que de la cacher.)
-    fn begin_pick(&mut self, ctx: &egui::Context) {
-        if self.capture_hidden_pos.is_none() {
-            if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
-                self.capture_hidden_pos = Some(r.min);
-            }
-        }
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-30000.0, -30000.0)));
-        self.pick_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
-        dbg_log("begin_pick: window parked off-screen");
-    }
-
-    fn end_pick_restore(&mut self, ctx: &egui::Context) {
-        if let Some(p) = self.capture_hidden_pos.take() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
-        }
-    }
-
-    fn handle_menu_event(&mut self, id: &str, ctx: &egui::Context) {
-            match id {
-                "toggle" => self.toggle_main(ctx),
-                "zone" => self.begin_pick(ctx),
-                "quit" => { self.save_cfg(); std::process::exit(0); }
-                "about" => {
-                    self.exit_mini(ctx);
-                    self.show_about = true;
-                    if self.update_info.is_none() && self.update_rx.is_none() {
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        std::thread::spawn(move || { let _ = tx.send(check_latest_release()); });
-                        self.update_rx = Some(rx);
-                    }
-                }
-                "opt_auto" => {
-                    self.auto_copy = !self.auto_copy;
-                    self.tray_opts.auto_copy.set_checked(self.auto_copy);
-                    self.save_cfg();
-                }
-                "opt_keep" => {
-                    self.keep_history = !self.keep_history;
-                    self.tray_opts.keep_history.set_checked(self.keep_history);
-                    self.save_cfg();
-                }
-                "opt_autostart" => {
-                    let want = !self.tray_opts.autostart.is_checked();
-                    let ok = set_autostart(want);
-                    self.tray_opts.autostart.set_checked(if ok { want } else { autostart_enabled() });
-                }
-                "opt_start_mini" => {
-                    self.start_mini = !self.start_mini;
-                    self.tray_opts.start_mini.set_checked(self.start_mini);
-                    self.save_cfg();
-                }
-                "opt_resize" => {
-                    self.auto_resize = !self.auto_resize;
-                    self.tray_opts.resize.set_checked(self.auto_resize);
-                    self.save_cfg();
-                }
-                "opt_barcode" => {
-                    self.decode_barcodes = !self.decode_barcodes;
-                    self.tray_opts.barcode.set_checked(self.decode_barcodes);
-                    self.save_cfg();
-                }
-                "opt_hw" => {
-                    self.hw_accel = !self.hw_accel;
-                    self.tray_opts.hw.set_checked(self.hw_accel);
-                    self.status = if self.hw_accel { "capture GPU (WGC) activée".into() } else { "capture GDI (CPU) — GPU au repos".into() };
-                    self.save_cfg();
-                }
-                "opt_trad" => {
-                    self.trad_enabled = !self.trad_enabled;
-                    self.tray_opts.trad.set_checked(self.trad_enabled);
-                    self.status = if self.trad_enabled { "traduction activée (hors-ligne)".into() } else { "traduction désactivée".into() };
-                    self.save_cfg();
-                }
-                "trad_dl" => {
-                    if self.trad_rx.is_none() {
-                        let langs = self.trad_langs.clone();
-                        if langs.is_empty() {
-                            self.status = "coche d'abord des langues (Options → Langues proposées)".into();
-                        } else {
-                            let (tx, rx) = std::sync::mpsc::channel();
-                            std::thread::spawn(move || { let _ = tx.send(TradEvent::Finished(translate::install_models(&langs))); });
-                            self.trad_rx = Some(rx);
-                            self.trad_busy = true;
-                            self.status = "téléchargement des modèles de traduction…".into();
-                        }
-                    }
-                }
-                "trad_pip" => {
-                    if self.trad_rx.is_none() {
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        std::thread::spawn(move || { let _ = tx.send(TradEvent::Finished(translate::pip_install())); });
-                        self.trad_rx = Some(rx);
-                        self.trad_busy = true;
-                        self.status = "pip install argostranslate…".into();
-                    }
-                }
-                "opt_top" => {
-                    self.always_on_top = !self.always_on_top;
-                    self.tray_opts.top.set_checked(self.always_on_top);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal }));
-                    self.save_cfg();
-                }
-                "opt_light" => {
-                    self.light_mode = !self.light_mode;
-                    self.tray_opts.light.set_checked(self.light_mode);
-                    self.save_cfg();
-                }
-                "opt_clear" => {
-                    clear_history_files();
-                    self.hist_tex.clear();
-                    self.status = "historique effacé".into();
-                }
-                ev if ev.starts_with("trad_lang_") => {
-                    let code = ev.trim_start_matches("trad_lang_").to_string();
-                    if let Some(item) = self.tray_opts.trad_langs.iter().find(|(c, _)| *c == code).map(|(_, i)| i.clone()) {
-                        if self.trad_langs.contains(&code) {
-                            self.trad_langs.retain(|c| c != &code);
-                            item.set_checked(false);
-                        } else {
-                            self.trad_langs.push(code.clone());
-                            item.set_checked(true);
-                        }
-                        self.save_cfg();
-                    }
-                }
-                "lang_latin" | "lang_zh" | "lang_ko" => {
-                    let key = match id { "lang_zh" => "zh", "lang_ko" => "ko", _ => "latin" };
-                    if key != "latin" && !pack_installed(key) {
-                        if self.pack_rx.is_none() {
-                            let (tx, rx) = std::sync::mpsc::channel();
-                            let k = key.to_string();
-                            std::thread::spawn(move || { let _ = tx.send(download_pack(&k)); });
-                            self.pack_rx = Some(rx);
-                            self.pack_pending_lang = Some(key.to_string());
-                            self.status = format!("téléchargement du pack {}…", key);
-                        }
-                    } else {
-                        self.set_ocr_lang(key);
-                    }
-                }
-                _ => {}
-            }
-    }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
