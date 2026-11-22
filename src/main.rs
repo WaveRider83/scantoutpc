@@ -1302,7 +1302,6 @@ impl ScantoutApp {
                 _ => {}
             }
     }
-}
 
     fn request_close(&mut self, ctx: &egui::Context) {
         if self.mini {
@@ -1465,7 +1464,8 @@ impl ScantoutApp {
             if resp.hovered() { ctx.set_cursor_icon(*cur); }
             if resp.drag_started() { ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(*dir)); }
         }
-    }
+        }
+}
 
 impl eframe::App for ScantoutApp {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
