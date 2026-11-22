@@ -183,29 +183,55 @@ fn layout_text(lines: &[OcrLine]) -> String {
         }
         if bd <= cw * 1.5 { best } else { None }
     };
-    let is_table = clusters.len() >= 2
-        && lines.len() >= 3
-        && lines.iter().all(|l| {
+    // Mappabilite par ligne : tous les fragments doivent tomber sur des clusters distincts
+    let line_map: Vec<Option<Vec<usize>>> = lines
+        .iter()
+        .map(|l| {
             if l.frags.len() < 2 {
-                return false;
+                return None;
             }
             let mut used = std::collections::HashSet::new();
-            l.frags.iter().all(|f| assign(f.0).map(|i| used.insert(i)).unwrap_or(false))
-        });
+            let mut cells = Vec::with_capacity(l.frags.len());
+            for f in &l.frags {
+                match assign(f.0) {
+                    Some(i) => {
+                        if !used.insert(i) {
+                            return None;
+                        }
+                        cells.push(i);
+                    }
+                    None => return None,
+                }
+            }
+            Some(cells)
+        })
+        .collect();
+    let multi = lines.iter().filter(|l| l.frags.len() >= 2).count();
+    let mappable = line_map.iter().flatten().count();
+    // Tableau si majorite de lignes tabulaires (et au moins 3), sinon alignement simple
+    let is_table = clusters.len() >= 2 && mappable >= 3 && multi > 0 && mappable * 10 >= multi * 6;
     if is_table {
         return lines
             .iter()
-            .map(|l| {
-                let mut cells = vec![String::new(); clusters.len()];
-                for (x, _, t) in &l.frags {
-                    let i = assign(*x).unwrap_or(0);
-                    let cell = &mut cells[i];
-                    if !cell.is_empty() {
-                        cell.push(' ');
+            .enumerate()
+            .map(|(li, l)| match &line_map[li] {
+                Some(cells) => {
+                    let mut out = vec![String::new(); clusters.len()];
+                    for (f, &ci) in l.frags.iter().zip(cells) {
+                        let cell = &mut out[ci];
+                        if !cell.is_empty() {
+                            cell.push(' ');
+                        }
+                        cell.push_str(postprocess_line(f.2.clone()).trim());
                     }
-                    cell.push_str(postprocess_line(t.clone()).trim());
+                    out.join("\t").trim_end_matches(|c: char| c == '\t' || c == ' ').to_string()
                 }
-                cells.join("\t").trim_end_matches(|c: char| c == '\t' || c == ' ').to_string()
+                None => l
+                    .frags
+                    .iter()
+                    .map(|f| postprocess_line(f.2.clone()))
+                    .collect::<Vec<_>>()
+                    .join(" "),
             })
             .collect::<Vec<_>>()
             .join("\n");
