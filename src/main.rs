@@ -1133,11 +1133,15 @@ impl ScantoutApp {
             let pp = ctx.pixels_per_point();
             let cur_w = ctx.input(|i| i.viewport().inner_rect.map(|r| r.width())).unwrap_or(460.0);
             let w = if self.auto_resize { (size[0] as f32 / pp + 28.0).clamp(400.0, 1100.0) } else { cur_w };
+            let mon_h = ctx.input(|i| i.raw.screen_rect.map(|r| r.height())).unwrap_or(940.0);
+            let max_h = (mon_h - 60.0).max(380.0);
+            // 170px d'aperçu + ~110px de chrome (historique, barre du bas, marges) + 19/ligne
+            const CHROME: f32 = 290.0;
             let h = if result.is_empty() {
-                if self.auto_resize { (size[1] as f32 / pp + 240.0).clamp(340.0, 950.0) } else { cur_w.min(0.0) } // 0 = pas de resize
+                (size[1] as f32 / pp + 240.0).clamp(340.0, max_h)
             } else {
-                let rows = estimate_rows(&result, w).clamp(6, 34);
-                (280.0 + rows as f32 * 20.5).clamp(380.0, 950.0)
+                let rows = estimate_rows(&result, w) as f32;
+                (rows * 19.0 + CHROME).clamp(340.0, max_h)
             };
             if h > 0.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
@@ -2220,8 +2224,9 @@ impl eframe::App for ScantoutApp {
 
         if let Some(tex) = &self.capture {
             let max_w = ui.available_width();
-            let scale = (max_w / tex.size_vec2().x).min(120.0 / tex.size_vec2().y).min(1.0);
-            ui.add(egui::Image::from_texture(tex).max_width(tex.size_vec2().x * scale));
+            let sz = tex.size_vec2();
+            let scale = (max_w / sz.x).min(170.0 / sz.y).min(2.0);
+            ui.add(egui::Image::from_texture(tex).fit_to_exact_size(egui::vec2(sz.x * scale, sz.y * scale)));
         }
         let hist = scan_history();
         egui::CollapsingHeader::new(egui::RichText::new(format!("🕘  Historique — {} capture{}", hist.len(), if hist.len() > 1 { "s" } else { "" })).strong())
@@ -2239,7 +2244,7 @@ impl eframe::App for ScantoutApp {
                     });
                 });
                 ui.add_space(2.0);
-                let hist_h = ui.available_height().max(140.0);
+                let hist_h = ui.available_height().min(260.0).max(120.0);
                 egui::ScrollArea::vertical().max_height(hist_h).show(ui, |ui| {
                     if hist.is_empty() {
                         ui.add_space(12.0);
