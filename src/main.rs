@@ -1140,6 +1140,30 @@ impl ScantoutApp {
         } // fenetre normale visible : on ne la reduit pas apres la capture
     }
 
+    /// Démarre une sélection de zone (même logique que le raccourci clavier).
+    fn trigger_capture(&mut self, ctx: &egui::Context) {
+        let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        let evis = ctx.input(|i| i.viewport().visible());
+        dbg_log(&format!("trigger capture: mini={} main_visible={} minimized={:?} egui_visible={:?}", self.mini, self.main_visible, minimized, evis));
+        let was_hidden = !self.main_visible || minimized;
+        if self.mini {
+            if was_hidden {
+                self.enter_mini(ctx);
+            } else {
+                self.mini_since = Some(std::time::Instant::now());
+            }
+            self.begin_pick(ctx);
+        } else if was_hidden {
+            self.main_visible = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.begin_pick(ctx);
+        } else {
+            self.begin_pick(ctx);
+        }
+    }
+
     fn import_file(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Images et PDF", &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff", "ico", "pdf"])
@@ -1850,30 +1874,7 @@ impl eframe::App for ScantoutApp {
                 if self.recording { return; }
                 if self.picking { dbg_log("hotkey ignore: picking en cours"); return; }
                 dbg_log("hotkey pressed");
-                // La selection de zone passe par des overlays egui enfants de la fenetre principale :
-                // elle DOIT etre visible, sinon egui panique ("user callback was never called").
-                // On restaure la fenetre puis on laisse une ou deux frames s'ecouler avant de
-                // creer les overlays.
-                let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
-                let evis = ctx.input(|i| i.viewport().visible());
-                dbg_log(&format!("hotkey state: mini={} main_visible={} minimized={:?} egui_visible={:?}", self.mini, self.main_visible, minimized, evis));
-                let was_hidden = !self.main_visible || minimized;
-                if self.mini {
-                    if was_hidden {
-                        self.enter_mini(ctx);
-                    } else {
-                        self.mini_since = Some(std::time::Instant::now());
-                    }
-                    self.begin_pick(ctx);
-                } else if was_hidden {
-                    self.main_visible = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    self.begin_pick(ctx);
-                } else {
-                    self.begin_pick(ctx);
-                }
+                self.trigger_capture(ctx);
             }
         }
     }
@@ -2316,6 +2317,11 @@ impl eframe::App for ScantoutApp {
             } else {
                 egui::RichText::new(format!("⌨ {}", self.hotkey_label)).strong()
             };
+            if ui.button("Capture").on_hover_text("Capturer une zone (comme le raccourci)").clicked() {
+                if !self.recording && !self.picking {
+                    self.trigger_capture(ui.ctx());
+                }
+            }
             if ui.button("Charger…").on_hover_text("Charger une image ou un PDF et l'analyser comme une capture").clicked() {
                 self.import_file(ui.ctx());
             }
